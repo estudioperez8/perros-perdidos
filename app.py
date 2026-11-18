@@ -41,7 +41,7 @@ init_db()
 # --- INTERFAZ PRINCIPAL ---
 st.markdown("<h1 style='text-align: center; color: #FF4B4B;'>🐾 Registro y Buscador de Perros Perdidos</h1>", unsafe_allow_html=True)
 
-menu = ["Buscar Perros", "Publicar Aviso"]
+menu = ["Buscar Perros", "Publicar Aviso", "Panel de Administrador"]
 choice = st.sidebar.selectbox("Menú de Navegación", menu)
 
 # --- SECCIÓN: BUSCAR PERROS ---
@@ -67,7 +67,6 @@ if choice == "Buscar Perros":
 
     busqueda_general = st.text_input("Búsqueda general (nombre, raza, collar, señas particulares...)")
 
-    # Filtrado en memoria
     perros_filtrados = []
     for row in rows:
         r_id, r_estado, r_nombre, r_raza, r_tamanio, r_color, r_zona, r_contacto, r_fecha, r_desc, r_foto = row
@@ -115,7 +114,7 @@ if choice == "Buscar Perros":
                                 st.markdown(f"*Señas:* {p[9]}")
                             st.markdown(f"📞 **Contacto:** `{p[7]}`")
 
-# --- SECCIÓN: PUBLICAR AVISO CON COINCIDENCIA INTELIGENTE ---
+# --- SECCIÓN: PUBLICAR AVISO CON COMPARACIÓN INTELIGENTE ---
 elif choice == "Publicar Aviso":
     st.subheader("📢 Publicar un perro perdido o encontrado")
     
@@ -136,13 +135,12 @@ elif choice == "Publicar Aviso":
             
         descripcion = st.text_area("Señas particulares (collar, mancha en la pata, herida, etc.)")
         
-        submit_btn = st.form_submit_button("Publicar y Buscar Coincidencias")
+        submit_btn = st.form_submit_button("Publicar y Comparar con la Base")
 
     if submit_btn:
         if not zona or not contacto or not foto_subida:
             st.error("Por favor completa al menos la Zona, el Contacto y sube una Foto.")
         else:
-            # Guardar imagen
             perro_id = str(uuid.uuid4())[:8]
             ext = foto_subida.name.split(".")[-1]
             foto_nombre = f"{perro_id}.{ext}"
@@ -162,16 +160,16 @@ elif choice == "Publicar Aviso":
             ))
             conn.commit()
             
-            # BÚSQUEDA DE COINCIDENCIAS AUTOMÁTICAS RECIENTES
+            # COMPARAR CON REGISTROS EXISTENTES EN LA BASE
             cursor.execute("SELECT * FROM perros WHERE id != ? AND (zona LIKE ? OR color LIKE ?)", 
                            (perro_id, f"%{zona}%", f"%{color}%"))
             coincidencias = cursor.fetchall()
             conn.close()
             
-            st.success("¡Aviso publicado correctamente! Ya aparece en la pestaña de búsqueda.")
+            st.success("¡Aviso publicado correctamente y guardado en la base de datos!")
             
             if coincidencias:
-                st.warning(f"⚠️ ¡Atención! Encontramos **{len(coincidencias)} registros similares** en la misma zona o color que quizás estén relacionados:")
+                st.warning(f"⚠️ ¡Atención! Encontramos **{len(coincidencias)} coincidencias posibles** en la base de datos por zona o características similares:")
                 for c in coincidencias:
                     cols_c = st.columns([1, 3])
                     with cols_c[0]:
@@ -182,3 +180,66 @@ elif choice == "Publicar Aviso":
                         st.markdown(f"**Descripción:** {c[9]}")
                         st.markdown(f"📞 Contacto: `{c[7]}`")
                         st.markdown("---")
+
+# --- SECCIÓN: PANEL DE ADMINISTRADOR (EXCLUSIVO) ---
+elif choice == "Panel de Administrador":
+    st.subheader("🔐 Panel de Control de Administrador")
+    
+    ADMIN_USER = "admin2026"
+    ADMIN_PASS = "2026"
+
+    usuario_ingresado = st.text_input("Usuario administrador")
+    password_ingresado = st.text_input("Contraseña", type="password")
+
+    if st.button("Iniciar Sesión"):
+        if usuario_ingresado == ADMIN_USER and password_ingresado == ADMIN_PASS:
+            st.session_state["is_admin"] = True
+            st.success("¡Acceso concedido!")
+        else:
+            st.error("Usuario o contraseña incorrectos.")
+
+    if st.session_state.get("is_admin", False):
+        st.markdown("---")
+        st.markdown("### 🗄️ Base de Datos Completa (Fotos y Características)")
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM perros ORDER BY fecha DESC")
+        registros = cursor.fetchall()
+        
+        st.write(f"Total de registros guardados: **{len(registros)}**")
+
+        if not registros:
+            st.info("Aún no hay registros en la base de datos.")
+        else:
+            for reg in registros:
+                r_id, r_estado, r_nombre, r_raza, r_tamanio, r_color, r_zona, r_contacto, r_fecha, r_desc, r_foto = reg
+                with st.expander(f"ID: {r_id} | [{r_estado}] - {r_zona} ({r_fecha})"):
+                    col_a, col_b = st.columns([1, 2])
+                    with col_a:
+                        if r_foto and os.path.exists(r_foto):
+                            st.image(r_foto, width=150)
+                        else:
+                            st.write("Sin foto disponible")
+                    with col_b:
+                        st.markdown(f"**Estado:** {r_estado}")
+                        st.markdown(f"**Nombre:** {r_nombre if r_nombre else 'No especificado'}")
+                        st.markdown(f"**Raza:** {r_raza if r_raza else 'No especificada'}")
+                        st.markdown(f"**Tamaño:** {r_tamanio} | **Color:** {r_color}")
+                        st.markdown(f"**Zona:** 📍 {r_zona}")
+                        st.markdown(f"**Fecha:** {r_fecha}")
+                        st.markdown(f"**Descripción:** {r_desc if r_desc else 'Sin descripción'}")
+                        st.markdown(f"📞 **Contacto:** `{r_contacto}`")
+                        
+                        if st.button(f"🗑️ Eliminar registro {r_id}", key=f"del_{r_id}"):
+                            cursor.execute("DELETE FROM perros WHERE id = ?", (r_id,))
+                            conn.commit()
+                            if r_foto and os.path.exists(r_foto):
+                                os.remove(r_foto)
+                            st.success(f"Registro {r_id} eliminado con éxito.")
+                            st.rerun()
+        conn.close()
+        
+        if st.button("Cerrar Sesión"):
+            st.session_state["is_admin"] = False
+            st.rerun()
