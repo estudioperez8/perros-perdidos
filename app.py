@@ -14,12 +14,14 @@ IMG_DIR = "fotos_perros"
 if not os.path.exists(IMG_DIR):
     os.makedirs(IMG_DIR)
 
-# --- BASE DE DATOS ---
+# --- BASE DE DATOS (ACTUALIZADA PARA EVITAR ERRORES DE COLUMNAS) ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    # Si la tabla vieja existe con otra estructura, la recreamos para evitar conflictos
+    cursor.execute("DROP TABLE IF EXISTS perros")
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS perros (
+        CREATE TABLE perros (
             id TEXT PRIMARY KEY,
             estado TEXT,
             nombre TEXT,
@@ -114,7 +116,7 @@ if choice == "Buscar Perros":
                                 st.markdown(f"*Señas:* {p[9]}")
                             st.markdown(f"📞 **Contacto:** `{p[7]}`")
 
-# --- SECCIÓN: PUBLICAR AVISO (FOTO OPCIONAL Y VALIDACIÓN FLEXIBLE) ---
+# --- SECCIÓN: PUBLICAR AVISO ---
 elif choice == "Publicar Aviso":
     st.subheader("📢 Publicar un perro perdido o encontrado")
     
@@ -136,7 +138,6 @@ elif choice == "Publicar Aviso":
         
         st.markdown("---")
         st.markdown("### 2️⃣ Subí la fotografía (Opcional - Múltiples formatos)")
-        # Ya no es obligatoria, se puede dejar vacía
         foto_subida = st.file_uploader(
             "Seleccioná o arrastrá la foto desde la galería (Opcional)", 
             type=["jpg", "jpeg", "png", "webp", "heic"]
@@ -146,14 +147,12 @@ elif choice == "Publicar Aviso":
         submit_btn = st.form_submit_button("💾 Guardar en la Base y Comparar Coincidencias")
 
     if submit_btn:
-        # Solo exigimos lo mínimo indispensable (Zona y Contacto), la foto ahora es opcional
         if not zona or not contacto:
             st.error("Por favor completa al menos la **Zona** y el **Contacto** para poder guardar el aviso.")
         else:
             perro_id = str(uuid.uuid4())[:8]
             foto_path = ""
             
-            # Si el usuario subió una foto, la procesamos y guardamos
             if foto_subida is not None:
                 ext = foto_subida.name.split(".")[-1].lower()
                 foto_nombre = f"{perro_id}.{ext}"
@@ -162,7 +161,6 @@ elif choice == "Publicar Aviso":
                 with open(foto_path, "wb") as f:
                     f.write(foto_subida.getbuffer())
                 
-            # Guardar en Base de Datos
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute('''
@@ -173,7 +171,6 @@ elif choice == "Publicar Aviso":
             ))
             conn.commit()
             
-            # COMPARAR CON REGISTROS EXISTENTES EN LA BASE
             cursor.execute("SELECT * FROM perros WHERE id != ? AND (zona LIKE ? OR color LIKE ?)", 
                            (perro_id, f"%{zona}%", f"%{color}%"))
             coincidencias = cursor.fetchall()
@@ -194,7 +191,7 @@ elif choice == "Publicar Aviso":
                         st.markdown(f"📞 Contacto: `{c[7]}`")
                         st.markdown("---")
 
-# --- SECCIÓN: PANEL DE ADMINISTRADOR (EXCLUSIVO) ---
+# --- SECCIÓN: PANEL DE ADMINISTRADOR ---
 elif choice == "Panel de Administrador":
     st.subheader("🔐 Panel de Control de Administrador")
     
@@ -256,3 +253,4 @@ elif choice == "Panel de Administrador":
         if st.button("Cerrar Sesión"):
             st.session_state["is_admin"] = False
             st.rerun()
+            
