@@ -114,7 +114,7 @@ if choice == "Buscar Perros":
                                 st.markdown(f"*Señas:* {p[9]}")
                             st.markdown(f"📞 **Contacto:** `{p[7]}`")
 
-# --- SECCIÓN: PUBLICAR AVISO (DATOS, FOTO MULTIFORMATO Y BOTÓN DE GUARDADO) ---
+# --- SECCIÓN: PUBLICAR AVISO (DATOS PRIMERO, FOTO MULTIFORMATO AL FINAL Y BOTÓN DE GUARDADO) ---
 elif choice == "Publicar Aviso":
     st.subheader("📢 Publicar un perro perdido o encontrado")
     
@@ -136,14 +136,12 @@ elif choice == "Publicar Aviso":
         
         st.markdown("---")
         st.markdown("### 2️⃣ Subí la fotografía (Múltiples formatos aceptados)")
-        # Se habilitan los formatos más comunes de celulares y PC: jpg, jpeg, png, webp, heic
         foto_subida = st.file_uploader(
             "Seleccioná o arrastrá la foto desde la galería", 
             type=["jpg", "jpeg", "png", "webp", "heic"]
         )
         
         st.markdown("---")
-        # Botón claro para guardar en la base y comparar
         submit_btn = st.form_submit_button("💾 Guardar en la Base y Comparar Coincidencias")
 
     if submit_btn:
