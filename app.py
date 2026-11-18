@@ -114,7 +114,7 @@ if choice == "Buscar Perros":
                                 st.markdown(f"*Señas:* {p[9]}")
                             st.markdown(f"📞 **Contacto:** `{p[7]}`")
 
-# --- SECCIÓN: PUBLICAR AVISO (DATOS PRIMERO, FOTO MULTIFORMATO AL FINAL Y BOTÓN DE GUARDADO) ---
+# --- SECCIÓN: PUBLICAR AVISO (FOTO OPCIONAL Y VALIDACIÓN FLEXIBLE) ---
 elif choice == "Publicar Aviso":
     st.subheader("📢 Publicar un perro perdido o encontrado")
     
@@ -135,9 +135,10 @@ elif choice == "Publicar Aviso":
         descripcion = st.text_area("Señas particulares (collar, mancha en la pata, herida, etc.)")
         
         st.markdown("---")
-        st.markdown("### 2️⃣ Subí la fotografía (Múltiples formatos aceptados)")
+        st.markdown("### 2️⃣ Subí la fotografía (Opcional - Múltiples formatos)")
+        # Ya no es obligatoria, se puede dejar vacía
         foto_subida = st.file_uploader(
-            "Seleccioná o arrastrá la foto desde la galería", 
+            "Seleccioná o arrastrá la foto desde la galería (Opcional)", 
             type=["jpg", "jpeg", "png", "webp", "heic"]
         )
         
@@ -145,16 +146,21 @@ elif choice == "Publicar Aviso":
         submit_btn = st.form_submit_button("💾 Guardar en la Base y Comparar Coincidencias")
 
     if submit_btn:
-        if not zona or not contacto or not foto_subida:
-            st.error("Por favor completa la Zona, el Contacto y sube una Foto antes de guardar.")
+        # Solo exigimos lo mínimo indispensable (Zona y Contacto), la foto ahora es opcional
+        if not zona or not contacto:
+            st.error("Por favor completa al menos la **Zona** y el **Contacto** para poder guardar el aviso.")
         else:
             perro_id = str(uuid.uuid4())[:8]
-            ext = foto_subida.name.split(".")[-1].lower()
-            foto_nombre = f"{perro_id}.{ext}"
-            foto_path = os.path.join(IMG_DIR, foto_nombre)
+            foto_path = ""
             
-            with open(foto_path, "wb") as f:
-                f.write(foto_subida.getbuffer())
+            # Si el usuario subió una foto, la procesamos y guardamos
+            if foto_subida is not None:
+                ext = foto_subida.name.split(".")[-1].lower()
+                foto_nombre = f"{perro_id}.{ext}"
+                foto_path = os.path.join(IMG_DIR, foto_nombre)
+                
+                with open(foto_path, "wb") as f:
+                    f.write(foto_subida.getbuffer())
                 
             # Guardar en Base de Datos
             conn = sqlite3.connect(DB_PATH)
