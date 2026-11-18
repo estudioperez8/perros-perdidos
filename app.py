@@ -8,11 +8,13 @@ from PIL import Image
 # --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Buscador de Perros Perdidos", page_icon="🐾", layout="wide")
 
-DB_PATH = "perros.db"
-IMG_DIR = "fotos_perros"
+# Rutas absolutas para evitar problemas en Streamlit Cloud
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "perros.db")
+IMG_DIR = os.path.join(BASE_DIR, "fotos_perros")
 
 if not os.path.exists(IMG_DIR):
-    os.makedirs(IMG_DIR)
+    os.makedirs(IMG_DIR, exist_ok=True)
 
 # --- BASE DE DATOS ---
 def init_db():
@@ -47,9 +49,9 @@ choice = st.sidebar.selectbox("Menú de Navegación", menu)
 # --- SECCIÓN 1: CARGUE SU PERRO PERDIDO ---
 if choice == "Cargue su perro perdido":
     st.subheader("📢 Registrar un perro que se extravió")
-    st.markdown("Complete los datos de su mascota y suba una foto para que quede registrada de forma segura en la base de datos.")
+    st.markdown("Complete los datos de su mascota y suba una foto obligatoria o recomendada para que quede registrada en la base de datos.")
     
-    # Subida de foto fuera del formulario para asegurar su lectura inmediata
+    # Subida de foto fuera del formulario
     st.markdown("### 📸 Fotografía del perro")
     foto_subida = st.file_uploader(
         "Seleccioná o arrastrá la foto desde la galería", 
@@ -57,7 +59,7 @@ if choice == "Cargue su perro perdido":
     )
     
     if foto_subida is not None:
-        st.image(foto_subida, width=200, caption="Vista previa de la foto seleccionada")
+        st.image(foto_subida, width=250, caption="Vista previa de la foto seleccionada")
 
     with st.form("form_perro_perdido"):
         col1, col2 = st.columns(2)
@@ -83,17 +85,17 @@ if choice == "Cargue su perro perdido":
             perro_id = str(uuid.uuid4())[:8]
             foto_path = ""
             
-            # Guardado físico de la imagen
+            # Guardado físico robusto usando bytes directos
             if foto_subida is not None:
                 try:
                     ext = foto_subida.name.split(".")[-1].lower()
                     foto_nombre = f"{perro_id}.{ext}"
                     foto_path = os.path.join(IMG_DIR, foto_nombre)
                     
-                    imagen = Image.open(foto_subida)
-                    imagen.save(foto_path)
+                    with open(foto_path, "wb") as f:
+                        f.write(foto_subida.getbuffer())
                 except Exception as e:
-                    st.warning(f"Error al guardar la imagen: {e}")
+                    st.error(f"Error detallado al guardar la imagen: {e}")
                     foto_path = ""
                 
             conn = sqlite3.connect(DB_PATH)
@@ -107,7 +109,7 @@ if choice == "Cargue su perro perdido":
             conn.commit()
             conn.close()
             
-            st.success("¡Su perro perdido fue registrado y guardado con éxito (incluyendo su foto) en la base de datos!")
+            st.success("¡Su perro perdido fue registrado y guardado con éxito con su foto en la base de datos!")
 
 # --- SECCIÓN 2: BUSQUE SI SU PERRO FUE VISTO ---
 elif choice == "Busque si su perro fue visto":
@@ -119,7 +121,7 @@ elif choice == "Busque si su perro fue visto":
         type=["jpg", "jpeg", "png", "webp", "heic"]
     )
     if foto_busqueda is not None:
-        st.image(foto_busqueda, width=200)
+        st.image(foto_busqueda, width=250, caption="Perro visto / encontrado")
 
     with st.form("form_buscar_visto"):
         col1, col2 = st.columns(2)
@@ -161,9 +163,9 @@ elif choice == "Busque si su perro fue visto":
                 cols_c = st.columns([1, 3])
                 with cols_c[0]:
                     if c[10] and os.path.exists(c[10]):
-                        st.image(c[10], width=120)
+                        st.image(c[10], width=140)
                     else:
-                        st.warning("Sin foto")
+                        st.warning("Sin foto registrada")
                 with cols_c[1]:
                     st.markdown(f"**Nombre:** {c[2] if c[2] else 'Sin nombre'} | **Raza:** {c[3]}")
                     st.markdown(f"**Zona:** 📍 {c[6]} | **Tamaño:** {c[4]} | **Color:** {c[5]}")
@@ -209,10 +211,11 @@ elif choice == "Panel de Administrador":
                 with st.expander(f"ID: {r_id} | [{r_estado}] - {r_zona} ({r_fecha})"):
                     col_a, col_b = st.columns([1, 2])
                     with col_a:
+                        # Verificación robusta de existencia de archivo físico
                         if r_foto and os.path.exists(r_foto):
-                            st.image(r_foto, width=150)
+                            st.image(r_foto, width=160)
                         else:
-                            st.write("Sin foto disponible")
+                            st.write(f"⚠️ Sin foto o archivo no hallado en ruta: {r_foto}")
                     with col_b:
                         st.markdown(f"**Estado:** {r_estado}")
                         st.markdown(f"**Nombre:** {r_nombre if r_nombre else 'No especificado'}")
@@ -227,7 +230,10 @@ elif choice == "Panel de Administrador":
                             cursor.execute("DELETE FROM perros WHERE id = ?", (r_id,))
                             conn.commit()
                             if r_foto and os.path.exists(r_foto):
-                                os.remove(r_foto)
+                                try:
+                                    os.remove(r_foto)
+                                except:
+                                    pass
                             st.success(f"Registro {r_id} eliminado con éxito.")
                             st.rerun()
         conn.close()
