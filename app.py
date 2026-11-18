@@ -114,7 +114,7 @@ if choice == "Buscar Perros":
                                 st.markdown(f"*Señas:* {p[9]}")
                             st.markdown(f"📞 **Contacto:** `{p[7]}`")
 
-# --- SECCIÓN: PUBLICAR AVISO (DATOS PRIMERO, FOTO AL FINAL) ---
+# --- SECCIÓN: PUBLICAR AVISO (DATOS, FOTO MULTIFORMATO Y BOTÓN DE GUARDADO) ---
 elif choice == "Publicar Aviso":
     st.subheader("📢 Publicar un perro perdido o encontrado")
     
@@ -135,17 +135,23 @@ elif choice == "Publicar Aviso":
         descripcion = st.text_area("Señas particulares (collar, mancha en la pata, herida, etc.)")
         
         st.markdown("---")
-        st.markdown("### 2️⃣ Subí la foto del perro")
-        foto_subida = st.file_uploader("Seleccioná o arrastrá la foto desde la galería", type=["jpg", "jpeg", "png"])
+        st.markdown("### 2️⃣ Subí la fotografía (Múltiples formatos aceptados)")
+        # Se habilitan los formatos más comunes de celulares y PC: jpg, jpeg, png, webp, heic
+        foto_subida = st.file_uploader(
+            "Seleccioná o arrastrá la foto desde la galería", 
+            type=["jpg", "jpeg", "png", "webp", "heic"]
+        )
         
-        submit_btn = st.form_submit_button("Publicar, Comparar y Guardar en la Base")
+        st.markdown("---")
+        # Botón claro para guardar en la base y comparar
+        submit_btn = st.form_submit_button("💾 Guardar en la Base y Comparar Coincidencias")
 
     if submit_btn:
         if not zona or not contacto or not foto_subida:
-            st.error("Por favor completa la Zona, el Contacto y asegúrate de subir una Foto al final.")
+            st.error("Por favor completa la Zona, el Contacto y sube una Foto antes de guardar.")
         else:
             perro_id = str(uuid.uuid4())[:8]
-            ext = foto_subida.name.split(".")[-1]
+            ext = foto_subida.name.split(".")[-1].lower()
             foto_nombre = f"{perro_id}.{ext}"
             foto_path = os.path.join(IMG_DIR, foto_nombre)
             
@@ -169,7 +175,7 @@ elif choice == "Publicar Aviso":
             coincidencias = cursor.fetchall()
             conn.close()
             
-            st.success("¡Aviso publicado correctamente y guardado en la base de datos!")
+            st.success("¡Aviso guardado correctamente en la base de datos!")
             
             if coincidencias:
                 st.warning(f"⚠️ ¡Atención! Encontramos **{len(coincidencias)} coincidencias posibles** en la base de datos por zona o características similares:")
