@@ -114,32 +114,35 @@ if choice == "Buscar Perros":
                                 st.markdown(f"*Señas:* {p[9]}")
                             st.markdown(f"📞 **Contacto:** `{p[7]}`")
 
-# --- SECCIÓN: PUBLICAR AVISO CON COMPARACIÓN INTELIGENTE ---
+# --- SECCIÓN: PUBLICAR AVISO (DATOS PRIMERO, FOTO AL FINAL) ---
 elif choice == "Publicar Aviso":
     st.subheader("📢 Publicar un perro perdido o encontrado")
     
     with st.form("form_publicar"):
+        st.markdown("### 1️⃣ Completá los datos del perro")
         col1, col2 = st.columns(2)
         with col1:
             estado = st.selectbox("¿Qué situación es?", ["Se busca", "Encontrado / Visto"])
             nombre = st.text_input("Nombre del perro (si lo sabes)")
             raza = st.text_input("Raza aproximada")
+        with col2:
             tamanio = st.selectbox("Tamaño", ["Pequeño", "Mediano", "Grande"])
             color = st.text_input("Color principal (ej. Negro con pecho blanco)")
-        
-        with col2:
             zona = st.text_input("Barrio o Zona aproximada")
-            contacto = st.text_input("Teléfono / WhatsApp de contacto")
-            fecha = st.date_input("Fecha del hecho", value=date.today())
-            foto_subida = st.file_uploader("Subir foto desde la galería", type=["jpg", "jpeg", "png"])
-            
+        
+        contacto = st.text_input("Teléfono / WhatsApp de contacto")
+        fecha = st.date_input("Fecha del hecho", value=date.today())
         descripcion = st.text_area("Señas particulares (collar, mancha en la pata, herida, etc.)")
         
-        submit_btn = st.form_submit_button("Publicar y Comparar con la Base")
+        st.markdown("---")
+        st.markdown("### 2️⃣ Subí la foto del perro")
+        foto_subida = st.file_uploader("Seleccioná o arrastrá la foto desde la galería", type=["jpg", "jpeg", "png"])
+        
+        submit_btn = st.form_submit_button("Publicar, Comparar y Guardar en la Base")
 
     if submit_btn:
         if not zona or not contacto or not foto_subida:
-            st.error("Por favor completa al menos la Zona, el Contacto y sube una Foto.")
+            st.error("Por favor completa la Zona, el Contacto y asegúrate de subir una Foto al final.")
         else:
             perro_id = str(uuid.uuid4())[:8]
             ext = foto_subida.name.split(".")[-1]
