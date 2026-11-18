@@ -41,15 +41,24 @@ init_db()
 # --- INTERFAZ PRINCIPAL ---
 st.markdown("<h1 style='text-align: center; color: #FF4B4B;'>🐾 Registro y Buscador de Perros Perdidos</h1>", unsafe_allow_html=True)
 
-# Menú renombrado con las dos opciones principales y el panel oculto/separado
 menu = ["Cargue su perro perdido", "Busque si su perro fue visto", "Panel de Administrador"]
 choice = st.sidebar.selectbox("Menú de Navegación", menu)
 
 # --- SECCIÓN 1: CARGUE SU PERRO PERDIDO ---
 if choice == "Cargue su perro perdido":
     st.subheader("📢 Registrar un perro que se extravió")
-    st.markdown("Complete los datos de su mascota y suba una foto para que quede registrada en la base de datos.")
+    st.markdown("Complete los datos de su mascota y suba una foto para que quede registrada de forma segura en la base de datos.")
     
+    # Subida de foto fuera del formulario para asegurar su lectura inmediata
+    st.markdown("### 📸 Fotografía del perro")
+    foto_subida = st.file_uploader(
+        "Seleccioná o arrastrá la foto desde la galería", 
+        type=["jpg", "jpeg", "png", "webp", "heic"]
+    )
+    
+    if foto_subida is not None:
+        st.image(foto_subida, width=200, caption="Vista previa de la foto seleccionada")
+
     with st.form("form_perro_perdido"):
         col1, col2 = st.columns(2)
         with col1:
@@ -65,14 +74,6 @@ if choice == "Cargue su perro perdido":
         fecha = st.date_input("Fecha de extravío", value=date.today())
         descripcion = st.text_area("Señas particulares (collar, mancha en la pata, herida, etc.)")
         
-        st.markdown("---")
-        st.markdown("### 📸 Fotografía del perro")
-        foto_subida = st.file_uploader(
-            "Seleccioná o arrastrá la foto desde la galería (Opcional)", 
-            type=["jpg", "jpeg", "png", "webp", "heic"]
-        )
-        
-        st.markdown("---")
         submit_btn = st.form_submit_button("💾 Guardar en la Base de Datos")
 
     if submit_btn:
@@ -82,6 +83,7 @@ if choice == "Cargue su perro perdido":
             perro_id = str(uuid.uuid4())[:8]
             foto_path = ""
             
+            # Guardado físico de la imagen
             if foto_subida is not None:
                 try:
                     ext = foto_subida.name.split(".")[-1].lower()
@@ -91,6 +93,7 @@ if choice == "Cargue su perro perdido":
                     imagen = Image.open(foto_subida)
                     imagen.save(foto_path)
                 except Exception as e:
+                    st.warning(f"Error al guardar la imagen: {e}")
                     foto_path = ""
                 
             conn = sqlite3.connect(DB_PATH)
@@ -104,13 +107,20 @@ if choice == "Cargue su perro perdido":
             conn.commit()
             conn.close()
             
-            st.success("¡Su perro perdido fue registrado y guardado con éxito en la base de datos!")
+            st.success("¡Su perro perdido fue registrado y guardado con éxito (incluyendo su foto) en la base de datos!")
 
-# --- SECCIÓN 2: BUSQUE SI SU PERRO FUE VISTO (O ENCONTRADO) ---
+# --- SECCIÓN 2: BUSQUE SI SU PERRO FUE VISTO ---
 elif choice == "Busque si su perro fue visto":
     st.subheader("🔍 Busque y compare si un perro visto coincide con los perdidos")
     st.markdown("Ingrese las características o suba la foto del perro que encontró para compararlo automáticamente con los reportes de perros perdidos.")
     
+    foto_busqueda = st.file_uploader(
+        "Suba la foto del perro encontrado para comparar", 
+        type=["jpg", "jpeg", "png", "webp", "heic"]
+    )
+    if foto_busqueda is not None:
+        st.image(foto_busqueda, width=200)
+
     with st.form("form_buscar_visto"):
         col1, col2 = st.columns(2)
         with col1:
@@ -120,13 +130,6 @@ elif choice == "Busque si su perro fue visto":
             filtro_color = st.text_input("Color principal (ej. marrón, negro)")
             contacto_buscador = st.text_input("Su teléfono de contacto (por si hay coincidencia)")
             
-        st.markdown("---")
-        st.markdown("### 📸 Foto del perro encontrado o visto")
-        foto_busqueda = st.file_uploader(
-            "Suba la foto del perro encontrado para comparar", 
-            type=["jpg", "jpeg", "png", "webp", "heic"]
-        )
-        
         buscar_btn = st.form_submit_button("🔎 Comparar y Buscar Coincidencias")
 
     if buscar_btn:
@@ -136,7 +139,6 @@ elif choice == "Busque si su perro fue visto":
         todos_perdidos = cursor.fetchall()
         conn.close()
 
-        # Filtrar coincidencias por zona o color
         coincidencias = []
         for p in todos_perdidos:
             r_id, r_estado, r_nombre, r_raza, r_tamanio, r_color, r_zona, r_contacto, r_fecha, r_desc, r_foto = p
