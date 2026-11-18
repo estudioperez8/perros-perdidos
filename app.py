@@ -10,167 +10,175 @@ st.set_page_config(page_title="Buscador de Perros Perdidos", page_icon="🐾", l
 
 DB_PATH = "perros.db"
 IMG_DIR = "fotos_perros"
-os.makedirs(IMG_DIR, exist_ok=True)
+
+if not os.path.exists(IMG_DIR):
+    os.makedirs(IMG_DIR)
 
 # --- BASE DE DATOS ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
+    cursor = conn.cursor()
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS perros (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT,
+            id TEXT PRIMARY KEY,
             estado TEXT,
+            nombre TEXT,
             raza TEXT,
-            tamano TEXT,
+            tamanio TEXT,
             color TEXT,
-            sexo TEXT,
             zona TEXT,
+            contacto TEXT,
             fecha TEXT,
             descripcion TEXT,
-            contacto TEXT,
-            ruta_foto TEXT
+            foto_path TEXT
         )
-    """)
+    ''')
     conn.commit()
     conn.close()
-
-def guardar_perro(datos):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO perros (
-            nombre, estado, raza, tamano, color, sexo, zona, fecha, descripcion, contacto, ruta_foto
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, datos)
-    conn.commit()
-    conn.close()
-
-def buscar_perros(estado, tamano, color, zona, texto_libre):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    query = "SELECT * FROM perros WHERE 1=1"
-    params = []
-
-    if estado != "Todos":
-        query += " AND estado = ?"
-        params.append(estado)
-    if tamano != "Todos":
-        query += " AND tamano = ?"
-        params.append(tamano)
-    if color.strip():
-        query += " AND LOWER(color) LIKE ?"
-        params.append(f"%{color.strip().lower()}%")
-    if zona.strip():
-        query += " AND LOWER(zona) LIKE ?"
-        params.append(f"%{zona.strip().lower()}%")
-    if texto_libre.strip():
-        query += " AND (LOWER(nombre) LIKE ? OR LOWER(raza) LIKE ? OR LOWER(descripcion) LIKE ?)"
-        term = f"%{texto_libre.strip().lower()}%"
-        params.extend([term, term, term])
-
-    query += " ORDER BY id DESC"
-    c.execute(query, params)
-    resultados = c.fetchall()
-    conn.close()
-    return resultados
 
 init_db()
 
-# --- INTERFAZ ---
-st.title("🐾 Registro y Buscador de Perros Perdidos")
+# --- INTERFAZ PRINCIPAL ---
+st.markdown("<h1 style='text-align: center; color: #FF4B4B;'>🐾 Registro y Buscador de Perros Perdidos</h1>", unsafe_allow_html=True)
 
-tab_buscar, tab_cargar = st.tabs(["🔍 Buscar Perros", "➕ Publicar Aviso"])
+menu = ["Buscar Perros", "Publicar Aviso"]
+choice = st.sidebar.selectbox("Menú de Navegación", menu)
 
-# === PESTAÑA 1: BUSCADOR ===
-with tab_buscar:
-    st.subheader("Filtrar por características")
+# --- SECCIÓN: BUSCAR PERROS ---
+if choice == "Buscar Perros":
+    st.subheader("🔍 Filtrar perros perdidos o encontrados")
     
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM perros ORDER BY fecha DESC")
+    rows = cursor.fetchall()
+    conn.close()
+
+    # Filtros de búsqueda
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        f_estado = st.selectbox("Estado", ["Todos", "Perdido", "Encontrado"])
+        filtro_estado = st.selectbox("Estado", ["Todos", "Se busca", "Encontrado / Visto"])
     with col2:
-        f_tamano = st.selectbox("Tamaño", ["Todos", "Chico", "Mediano", "Grande"])
+        filtro_tamanio = st.selectbox("Tamaño", ["Todos", "Pequeño", "Mediano", "Grande"])
     with col3:
-        f_color = st.text_input("Color (ej. negro, marrón, blanco)")
+        filtro_color = st.text_input("Color (ej. negro, marrón, blanco)")
     with col4:
-        f_zona = st.text_input("Barrio / Zona")
+        filtro_zona = st.text_input("Barrio / Zona")
 
-    f_texto = st.text_input("Búsqueda general (nombre, raza, collar, señas particulares...)")
+    busqueda_general = st.text_input("Búsqueda general (nombre, raza, collar, señas particulares...)")
 
-    resultados = buscar_perros(f_estado, f_tamano, f_color, f_zona, f_texto)
+    # Filtrado en memoria
+    perros_filtrados = []
+    for row in rows:
+        r_id, r_estado, r_nombre, r_raza, r_tamanio, r_color, r_zona, r_contacto, r_fecha, r_desc, r_foto = row
+        
+        if filtro_estado != "Todos" and r_estado != filtro_estado:
+            continue
+        if filtro_tamanio != "Todos" and r_tamanio != filtro_tamanio:
+            continue
+        if filtro_color and filtro_color.lower() not in r_color.lower():
+            continue
+        if filtro_zona and filtro_zona.lower() not in r_zona.lower():
+            continue
+        if busqueda_general:
+            texto_completo = f"{r_nombre} {r_raza} {r_desc} {r_zona} {r_color}".lower()
+            if busqueda_general.lower() not in texto_completo:
+                continue
+                
+        perros_filtrados.append(row)
 
-    st.markdown(f"**Resultados encontrados:** {len(resultados)}")
-    st.divider()
+    st.markdown(f"**Resultados encontrados:** {len(perros_filtrados)}")
+    st.markdown("---")
 
-    if not resultados:
+    if not perros_filtrados:
         st.info("No se encontraron publicaciones con esos filtros.")
     else:
-        cols = st.columns(3)
-        for idx, perro in enumerate(resultados):
-            (p_id, nombre, estado, raza, tamano, color, sexo, zona, fecha, desc, contacto, ruta_foto) = perro
-            
-            with cols[idx % 3]:
-                with st.container(border=True):
-                    if ruta_foto and os.path.exists(ruta_foto):
-                        st.image(ruta_foto, use_container_width=True)
-                    
-                    badge = "🔴 PERDIDO" if estado == "Perdido" else "🟢 ENCONTRADO"
-                    st.markdown(f"### {badge} - {nombre or 'Sin nombre'}")
-                    st.write(f"**Zona:** {zona} | **Fecha:** {fecha}")
-                    st.write(f"**Características:** {tamano} • {color} • {sexo} • {raza}")
-                    if desc:
-                        st.caption(desc)
-                    st.success(f"📞 Contacto: {contacto}")
+        for i in range(0, len(perros_filtrados), 3):
+            cols = st.columns(3)
+            for j in range(3):
+                if i + j < len(perros_filtrados):
+                    p = perros_filtrados[i + j]
+                    with cols[j]:
+                        with st.container(border=True):
+                            st.markdown(f"### **{p[1]}**")
+                            if p[10] and os.path.exists(p[10]):
+                                st.image(p[10], use_column_width=True)
+                            else:
+                                st.warning("Sin imagen disponible")
+                            
+                            st.markdown(f"**Nombre:** {p[2] if p[2] else 'Desconocido'}")
+                            st.markdown(f"**Raza:** {p[3] if p[3] else 'No especificada'}")
+                            st.markdown(f"**Tamaño:** {p[4]} | **Color:** {p[5]}")
+                            st.markdown(f"**Zona:** 📍 {p[6]}")
+                            st.markdown(f"**Fecha:** {p[8]}")
+                            if p[9]:
+                                st.markdown(f"*Señas:* {p[9]}")
+                            st.markdown(f"📞 **Contacto:** `{p[7]}`")
 
-# === PESTAÑA 2: CARGAR DATOS Y FOTO ===
-with tab_cargar:
-    st.subheader("Cargar datos del perro")
+# --- SECCIÓN: PUBLICAR AVISO CON COINCIDENCIA INTELIGENTE ---
+elif choice == "Publicar Aviso":
+    st.subheader("📢 Publicar un perro perdido o encontrado")
     
-    with st.form("form_perro", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            estado = st.selectbox("Tipo de aviso *", ["Perdido", "Encontrado"])
-            nombre = st.text_input("Nombre (si se conoce)")
-            raza = st.text_input("Raza o mestizo", value="Mestizo")
-            tamano = st.selectbox("Tamaño *", ["Chico", "Mediano", "Grande"])
-            color = st.text_input("Color principal y manchas *")
+    with st.form("form_publicar"):
+        col1, col2 = st.columns(2)
+        with col1:
+            estado = st.selectbox("¿Qué situación es?", ["Se busca", "Encontrado / Visto"])
+            nombre = st.text_input("Nombre del perro (si lo sabes)")
+            raza = st.text_input("Raza aproximada")
+            tamanio = st.selectbox("Tamaño", ["Pequeño", "Mediano", "Grande"])
+            color = st.text_input("Color principal (ej. Negro con pecho blanco)")
         
-        with c2:
-            sexo = st.selectbox("Sexo", ["Macho", "Hembra", "No sé"])
-            zona = st.text_input("Barrio / Calle de referencia *")
-            fecha = st.date_input("Fecha *", value=date.today())
-            contacto = st.text_input("Teléfono / WhatsApp de contacto *")
-            foto = st.file_uploader("Subir foto del perro *", type=["jpg", "jpeg", "png", "webp"])
-
-        descripcion = st.text_area("Señas particulares (collar, cicatrices, comportamiento, etc.)")
+        with col2:
+            zona = st.text_input("Barrio o Zona aproximada")
+            contacto = st.text_input("Teléfono / WhatsApp de contacto")
+            fecha = st.date_input("Fecha del hecho", value=date.today())
+            foto_subida = st.file_uploader("Subir foto desde la galería", type=["jpg", "jpeg", "png"])
+            
+        descripcion = st.text_area("Señas particulares (collar, mancha en la pata, herida, etc.)")
         
-        submitted = st.form_submit_button("Publicar aviso", type="primary")
+        submit_btn = st.form_submit_button("Publicar y Buscar Coincidencias")
 
-        if submitted:
-            if not color or not zona or not contacto or not foto:
-                st.error("Completá todos los campos obligatorios marcados con * y subí una foto.")
-            else:
-                # Guardar imagen con nombre único
-                ext = foto.name.split(".")[-1]
-                nombre_archivo = f"{uuid.uuid4().hex}.{ext}"
-                ruta_guardado = os.path.join(IMG_DIR, nombre_archivo)
+    if submit_btn:
+        if not zona or not contacto or not foto_subida:
+            st.error("Por favor completa al menos la Zona, el Contacto y sube una Foto.")
+        else:
+            # Guardar imagen
+            perro_id = str(uuid.uuid4())[:8]
+            ext = foto_subida.name.split(".")[-1]
+            foto_nombre = f"{perro_id}.{ext}"
+            foto_path = os.path.join(IMG_DIR, foto_nombre)
+            
+            with open(foto_path, "wb") as f:
+                f.write(foto_subida.getbuffer())
                 
-                img = Image.open(foto)
-                img.save(ruta_guardado)
-
-                guardar_perro((
-                    nombre.strip(),
-                    estado,
-                    raza.strip(),
-                    tamano,
-                    color.strip(),
-                    sexo,
-                    zona.strip(),
-                    str(fecha),
-                    descripcion.strip(),
-                    contacto.strip(),
-                    ruta_guardado
-                ))
-                st.success("¡Aviso publicado correctamente! Ya aparece en la pestaña de búsqueda.")
+            # Guardar en Base de Datos
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO perros VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                perro_id, estado, nombre, raza, tamanio, color, zona, contacto, 
+                str(fecha), descripcion, foto_path
+            ))
+            conn.commit()
+            
+            # BÚSQUEDA DE COINCIDENCIAS AUTOMÁTICAS RECIENTES
+            cursor.execute("SELECT * FROM perros WHERE id != ? AND (zona LIKE ? OR color LIKE ?)", 
+                           (perro_id, f"%{zona}%", f"%{color}%"))
+            coincidencias = cursor.fetchall()
+            conn.close()
+            
+            st.success("¡Aviso publicado correctamente! Ya aparece en la pestaña de búsqueda.")
+            
+            if coincidencias:
+                st.warning(f"⚠️ ¡Atención! Encontramos **{len(coincidencias)} registros similares** en la misma zona o color que quizás estén relacionados:")
+                for c in coincidencias:
+                    cols_c = st.columns([1, 3])
+                    with cols_c[0]:
+                        if c[10] and os.path.exists(c[10]):
+                            st.image(c[10], width=100)
+                    with cols_c[1]:
+                        st.markdown(f"**Estado:** {c[1]} | **Zona:** {c[6]}")
+                        st.markdown(f"**Descripción:** {c[9]}")
+                        st.markdown(f"📞 Contacto: `{c[7]}`")
+                        st.markdown("---")
