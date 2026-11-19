@@ -10,7 +10,7 @@ import uuid
 from datetime import date
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 # --- CONFIGURACIÓN INICIAL Y SEGURIDAD ---
 st.set_page_config(page_title="Perros Perdidos", page_icon="🐾", layout="wide")
@@ -22,6 +22,7 @@ MAX_FILE_BYTES = 6 * 1024 * 1024  # 6 MB máximo por foto
 MAX_RESULTADOS = 15
 MAX_INTENTOS_LOGIN = 5
 BLOQUEO_SEGUNDOS = 60
+UMBRAL_BASE_COINCIDENCIA = 82  # Base desde 82%
 
 Image.MAX_IMAGE_PIXELS = 20_000_000  # Previene bombas de descompresión en imágenes gigantes
 
@@ -109,53 +110,144 @@ def procesar_foto(raw_bytes):
         return None
 
 
+def _recorte_central(img, margen=0.15):
+    """Recorta levemente los bordes externos para priorizar el cuerpo/cabeza del perro."""
+    w, h = img.size
+    left = int(w * margen)
+    top = int(h * margen)
+    right = max(left + 1, int(w * (1.0 - margen)))
+    bottom = max(top + 1, int(h * (1.0 - margen)))
+    return img.crop((left, top, right, bottom))
+
+
+def _similitud_histograma(h1, h2):
+    """Intersección normalizada entre dos histogramas de igual longitud (0.0 a 1.0)."""
+    if not h1 or not h2 or len(h1) != len(h2):
+        return 0.0
+    s1 = sum(h1)
+    s2 = sum(h2)
+    if s1 <= 0 or s2 <= 0:
+        return 0.0
+    n1 = [x / s1 for x in h1]
+    n2 = [x / s2 for x in h2]
+    return max(0.0, min(1.0, sum(min(a, b) for a, b in zip(n1, n2))))
+
+
+def _similitud_vector_centrado(v1, v2):
+    """Similitud coseno entre vectores normalizados (0.0 a 1.0)."""
+    if not v1 or not v2 or len(v1) != len(v2):
+        return 0.0
+    dot = sum(a * b for a, b in zip(v1, v2))
+    n1 = math.sqrt(sum(a * a for a in v1))
+    n2 = math.sqrt(sum(b * b for b in v2))
+    if n1 == 0 or n2 == 0:
+        return 0.0
+    return max(0.0, min(1.0, dot / (n1 * n2)))
+
+
 def extraer_descriptores_imagen(foto_bytes):
     """
-    Extrae un vector combinado de color/estructura (16x16 RGB) y luminancia normalizada
-    para comparar similitud visual entre dos fotos de perros.
+    Extrae descriptores enfocados en:
+    1) Color del pelaje: histograma RGB cuantizado (8x8x8) y distribución de tonos claros/oscuros.
+    2) Forma y contorno del animal: grilla espacial 12x12 de forma/bordes con peso central.
     """
     if not foto_bytes:
         return None
     try:
-        img = Image.open(io.BytesIO(bytes(foto_bytes)))
-        img = ImageOps.exif_transpose(img).convert("RGB").resize((16, 16))
-        pixels = list(img.getdata())
+        base = Image.open(io.BytesIO(bytes(foto_bytes)))
+        base = ImageOps.exif_transpose(base).convert("RGB")
+        sujeto_rgb = _recorte_central(base, margen=0.14)
 
-        rgb_vec = []
-        gray_vec = []
-        for r, g, b in pixels:
-            rgb_vec.extend([r / 255.0, g / 255.0, b / 255.0])
-            lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-            gray_vec.append(lum)
+        # --- 1. COLOR DEL PELAJE ---
+        color_img = sujeto_rgb.resize((96, 96))
+        hist_rgb = [0] * (8 * 8 * 8)
+        tonos_claros_oscuros = [0, 0, 0]  # oscuro (<85), medio (85..170), claro (>170)
 
-        mean_g = sum(gray_vec) / len(gray_vec)
-        gray_centered = [x - mean_g for x in gray_vec]
+        for r, g, b in color_img.getdata():
+            rb = min(7, r // 32)
+            gb = min(7, g // 32)
+            bb = min(7, b // 32)
+            hist_rgb[(rb * 64) + (gb * 8) + bb] += 1
 
-        norm_rgb = math.sqrt(sum(x * x for x in rgb_vec))
-        norm_gray = math.sqrt(sum(x * x for x in gray_centered))
-        if norm_rgb == 0 or norm_gray == 0:
-            return None
+            lum = 0.299 * r + 0.587 * g + 0.114 * b
+            if lum < 85:
+                tonos_claros_oscuros[0] += 1
+            elif lum <= 170:
+                tonos_claros_oscuros[1] += 1
+            else:
+                tonos_claros_oscuros[2] += 1
 
-        return ([x / norm_rgb for x in rgb_vec], [x / norm_gray for x in gray_centered])
+        # --- 2. FORMA Y CONTORNO DEL ANIMAL ---
+        # Normalizamos tamaño para comparar estructura/forma con independencia de resolución
+        forma_rgb = sujeto_rgb.resize((120, 120))
+        gray_img = forma_rgb.convert("L")
+        edges_img = gray_img.filter(ImageFilter.FIND_EDGES)
+
+        # Combinamos silueta (luminancia suavizada) + bordes/forma del cuerpo
+        grid_size = 12
+        cell_w = 120 // grid_size
+        cell_h = 120 // grid_size
+        gray_px = list(gray_img.getdata())
+        edge_px = list(edges_img.getdata())
+
+        forma_vec = []
+        for gy in range(grid_size):
+            for gx in range(grid_size):
+                # Peso mayor hacia el centro de la grilla (donde suele ubicarse el perro)
+                dy = (gy - (grid_size - 1) / 2.0) / ((grid_size - 1) / 2.0)
+                dx = (gx - (grid_size - 1) / 2.0) / ((grid_size - 1) / 2.0)
+                peso_espacial = max(0.35, 1.15 - 0.45 * math.sqrt(dx * dx + dy * dy))
+
+                suma_forma = 0.0
+                for py in range(gy * cell_h, (gy + 1) * cell_h):
+                    row_off = py * 120
+                    for px in range(gx * cell_w, (gx + 1) * cell_w):
+                        idx = row_off + px
+                        g_val = gray_px[idx] / 255.0
+                        e_val = edge_px[idx] / 255.0
+                        # Resalta contornos y estructura interna del pelaje/forma
+                        suma_forma += (0.55 * e_val) + (0.45 * abs(g_val - 0.5))
+
+                promedio_celda = (suma_forma / (cell_w * cell_h)) * peso_espacial
+                forma_vec.append(promedio_celda)
+
+        # Proporción de aspecto normalizada (ancho/alto del recorte)
+        w_s, h_s = sujeto_rgb.size
+        ratio_aspecto = min(2.0, max(0.5, w_s / max(1, h_s)))
+
+        return {
+            "hist_rgb": hist_rgb,
+            "tonos": tonos_claros_oscuros,
+            "forma_vec": forma_vec,
+            "ratio": ratio_aspecto,
+        }
     except Exception:
         return None
 
 
 def calcular_similitud_imagen(foto_a, foto_b):
-    """Retorna porcentaje (0 a 100) o None si alguna foto no existe."""
+    """
+    Retorna porcentaje (0 a 100) o None si alguna foto no existe.
+    Pondera color del pelaje (45%) y forma/contorno del animal (55%).
+    """
     desc_a = extraer_descriptores_imagen(foto_a)
     desc_b = extraer_descriptores_imagen(foto_b)
     if not desc_a or not desc_b:
         return None
 
-    rgb_a, gray_a = desc_a
-    rgb_b, gray_b = desc_b
+    sim_hist_color = _similitud_histograma(desc_a["hist_rgb"], desc_b["hist_rgb"])
+    sim_tonos = _similitud_histograma(desc_a["tonos"], desc_b["tonos"])
+    sim_color = (0.75 * sim_hist_color) + (0.25 * sim_tonos)
 
-    sim_rgb = max(0.0, min(1.0, sum(x * y for x, y in zip(rgb_a, rgb_b))))
-    sim_gray = max(0.0, min(1.0, (sum(x * y for x, y in zip(gray_a, gray_b)) + 1.0) / 2.0))
+    sim_grilla_forma = _similitud_vector_centrado(desc_a["forma_vec"], desc_b["forma_vec"])
+    diff_ratio = abs(desc_a["ratio"] - desc_b["ratio"])
+    sim_proporcion = max(0.0, 1.0 - (diff_ratio / 1.5))
+    sim_forma = (0.80 * sim_grilla_forma) + (0.20 * sim_proporcion)
 
-    combinada = (0.65 * sim_rgb) + (0.35 * sim_gray)
-    return int(round(combinada * 100))
+    # Curva suave para que similitudes reales de color + forma se reflejen con claridad
+    combinada = (0.45 * sim_color) + (0.55 * sim_forma)
+    ajustada = combinada ** 0.85
+    return int(round(max(0.0, min(1.0, ajustada)) * 100))
 
 
 def tokenizar(texto):
@@ -210,11 +302,11 @@ def calcular_score_par(datos_a, foto_a, datos_b, foto_b):
     score_datos = int(round((puntos_datos / peso_datos) * 100)) if peso_datos > 0 else None
 
     if sim_img is not None and score_datos is not None:
-        score_total = int(round((0.70 * sim_img) + (0.30 * score_datos)))
-        motivos.insert(0, f"Imagen: {sim_img}%")
+        score_total = int(round((0.75 * sim_img) + (0.25 * score_datos)))
+        motivos.insert(0, f"Color y forma: {sim_img}%")
     elif sim_img is not None:
         score_total = sim_img
-        motivos.insert(0, f"Imagen: {sim_img}%")
+        motivos.insert(0, f"Color y forma: {sim_img}%")
     elif score_datos is not None:
         score_total = score_datos
     else:
@@ -256,7 +348,7 @@ def guardar_en_columna(columna_destino, datos_dict, foto_bytes):
 
 
 def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
-    """Compara datos y especialmente la imagen contra la columna opuesta."""
+    """Compara datos y especialmente color/forma de la imagen contra la columna opuesta."""
     conn = get_conn()
     cursor = conn.cursor()
 
@@ -294,8 +386,8 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
     return coincidencias[:MAX_RESULTADOS]
 
 
-def contar_coincidencias_desde_82():
-    """Cuenta cuántos pares entre perros perdidos y perros vistos tienen 82% o más de coincidencia."""
+def contar_coincidencias_base_82():
+    """Cuenta cuántos pares entre perros perdidos y perros vistos alcanzan la base del 82%."""
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT perro_perdido, foto_perdido FROM perros WHERE perro_perdido IS NOT NULL")
@@ -321,7 +413,7 @@ def contar_coincidencias_desde_82():
                 datos_v = {}
 
             score_total, _, _ = calcular_score_par(datos_p, f_perd, datos_v, f_vist)
-            if score_total >= 82:
+            if score_total >= UMBRAL_BASE_COINCIDENCIA:
                 total += 1
 
     return total
@@ -393,7 +485,7 @@ def mostrar_coincidencias(titulo, coincidencias, etiqueta_contacto):
                 else:
                     st.caption("Sin foto cargada")
             with col_info:
-                img_txt = f" | Similitud de imagen: **{item['sim_img']}%**" if item["sim_img"] is not None else ""
+                img_txt = f" | Similitud de color y forma: **{item['sim_img']}%**" if item["sim_img"] is not None else ""
                 st.markdown(f"### Coincidencia general: {item['score']}%{img_txt}")
                 if item["motivos"]:
                     st.caption("Detalle: " + " • ".join(item["motivos"]))
@@ -539,12 +631,12 @@ else:
     st.markdown("<h1 style='text-align: center;'>🐾 Perros Perdidos y Vistos</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Elegí una opción para cargar foto y datos y comparar imágenes:</p>", unsafe_allow_html=True)
 
-    coincidencias_82 = contar_coincidencias_desde_82()
+    total_coincidencias = contar_coincidencias_base_82()
     _, col_metric, _ = st.columns([1.5, 1, 1.5])
     with col_metric:
         st.metric(
             label="Coincidencias",
-            value=coincidencias_82,
+            value=total_coincidencias,
         )
 
     col_op1, col_op2 = st.columns(2)
