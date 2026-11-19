@@ -164,6 +164,66 @@ def tokenizar(texto):
     return {t for t in re.findall(r"[a-záéíóúüñ0-9]+", texto.lower()) if len(t) >= 3}
 
 
+def calcular_score_par(datos_a, foto_a, datos_b, foto_b):
+    """Calcula el porcentaje de coincidencia general (0 a 100) entre dos registros."""
+    sim_img = calcular_similitud_imagen(foto_a, foto_b)
+
+    zona_a = (datos_a.get("zona") or "").strip().lower()
+    color_a = (datos_a.get("color") or "").strip().lower()
+    tam_a = datos_a.get("tamanio") or ""
+    tokens_a = tokenizar(f"{datos_a.get('raza', '')} {datos_a.get('color', '')} {datos_a.get('descripcion', '')}")
+
+    zona_b = (datos_b.get("zona") or "").strip().lower()
+    color_b = (datos_b.get("color") or "").strip().lower()
+    tam_b = datos_b.get("tamanio") or ""
+    tokens_b = tokenizar(f"{datos_b.get('raza', '')} {datos_b.get('color', '')} {datos_b.get('descripcion', '')}")
+
+    puntos_datos = 0.0
+    peso_datos = 0.0
+    motivos = []
+
+    if zona_a and zona_b:
+        peso_datos += 40.0
+        if zona_a in zona_b or zona_b in zona_a:
+            puntos_datos += 40.0
+            motivos.append(f"Zona: {datos_b.get('zona')}")
+
+    if color_a and color_b:
+        peso_datos += 35.0
+        if color_a in color_b or color_b in color_a:
+            puntos_datos += 35.0
+            motivos.append(f"Color: {datos_b.get('color')}")
+
+    if tam_a and tam_a != "No sé / No especificado" and tam_b and tam_b != "No sé / No especificado":
+        peso_datos += 15.0
+        if tam_a == tam_b:
+            puntos_datos += 15.0
+            motivos.append(f"Tamaño: {tam_b}")
+
+    if tokens_a and tokens_b:
+        peso_datos += 10.0
+        comunes = tokens_a.intersection(tokens_b)
+        if comunes:
+            puntos_datos += 10.0 * min(1.0, len(comunes) / max(1, min(len(tokens_a), 2)))
+            motivos.append(f"Detalles: {', '.join(sorted(comunes))}")
+
+    score_datos = int(round((puntos_datos / peso_datos) * 100)) if peso_datos > 0 else None
+
+    if sim_img is not None and score_datos is not None:
+        score_total = int(round((0.70 * sim_img) + (0.30 * score_datos)))
+        motivos.insert(0, f"Imagen: {sim_img}%")
+    elif sim_img is not None:
+        score_total = sim_img
+        motivos.insert(0, f"Imagen: {sim_img}%")
+    elif score_datos is not None:
+        score_total = score_datos
+    else:
+        score_total = 50
+        motivos.append("Registro disponible")
+
+    return score_total, sim_img, motivos
+
+
 def guardar_en_columna(columna_destino, datos_dict, foto_bytes):
     """Guarda en la columna perro_perdido/foto_perdido o perro_visto/foto_visto."""
     reg_id = str(uuid.uuid4())[:8]
@@ -208,11 +268,6 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
     filas = cursor.fetchall()
     conn.close()
 
-    zona_n = (datos_nuevo.get("zona") or "").strip().lower()
-    color_n = (datos_nuevo.get("color") or "").strip().lower()
-    tam_n = datos_nuevo.get("tamanio") or ""
-    tokens_n = tokenizar(f"{datos_nuevo.get('raza', '')} {datos_nuevo.get('color', '')} {datos_nuevo.get('descripcion', '')}")
-
     coincidencias = []
     for reg_id, fecha_reg, datos_raw, foto_cand in filas:
         try:
@@ -220,55 +275,7 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
         except Exception:
             datos_c = {}
 
-        sim_img = calcular_similitud_imagen(foto_nueva, foto_cand)
-
-        puntos_datos = 0.0
-        peso_datos = 0.0
-        motivos = []
-
-        zona_c = (datos_c.get("zona") or "").strip().lower()
-        color_c = (datos_c.get("color") or "").strip().lower()
-        tam_c = datos_c.get("tamanio") or ""
-        tokens_c = tokenizar(f"{datos_c.get('raza', '')} {datos_c.get('color', '')} {datos_c.get('descripcion', '')}")
-
-        if zona_n and zona_c:
-            peso_datos += 40.0
-            if zona_n in zona_c or zona_c in zona_n:
-                puntos_datos += 40.0
-                motivos.append(f"Zona: {datos_c.get('zona')}")
-
-        if color_n and color_c:
-            peso_datos += 35.0
-            if color_n in color_c or color_c in color_n:
-                puntos_datos += 35.0
-                motivos.append(f"Color: {datos_c.get('color')}")
-
-        if tam_n and tam_n != "No sé / No especificado" and tam_c and tam_c != "No sé / No especificado":
-            peso_datos += 15.0
-            if tam_n == tam_c:
-                puntos_datos += 15.0
-                motivos.append(f"Tamaño: {tam_c}")
-
-        if tokens_n and tokens_c:
-            peso_datos += 10.0
-            comunes = tokens_n.intersection(tokens_c)
-            if comunes:
-                puntos_datos += 10.0 * min(1.0, len(comunes) / max(1, min(len(tokens_n), 2)))
-                motivos.append(f"Detalles: {', '.join(sorted(comunes))}")
-
-        score_datos = int(round((puntos_datos / peso_datos) * 100)) if peso_datos > 0 else None
-
-        if sim_img is not None and score_datos is not None:
-            score_total = int(round((0.70 * sim_img) + (0.30 * score_datos)))
-            motivos.insert(0, f"Imagen: {sim_img}%")
-        elif sim_img is not None:
-            score_total = sim_img
-            motivos.insert(0, f"Imagen: {sim_img}%")
-        elif score_datos is not None:
-            score_total = score_datos
-        else:
-            score_total = 50
-            motivos.append("Registro disponible")
+        score_total, sim_img, motivos = calcular_score_par(datos_nuevo, foto_nueva, datos_c, foto_cand)
 
         if score_total >= 45 or (sim_img is not None and sim_img >= 55):
             coincidencias.append(
@@ -285,6 +292,39 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
 
     coincidencias.sort(key=lambda x: (x["sim_img"] if x["sim_img"] is not None else -1, x["score"]), reverse=True)
     return coincidencias[:MAX_RESULTADOS]
+
+
+def contar_coincidencias_mayores_50():
+    """Cuenta cuántos pares entre perros perdidos y perros vistos superan el 50%."""
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("SELECT perro_perdido, foto_perdido FROM perros WHERE perro_perdido IS NOT NULL")
+    perdidos = cursor.fetchall()
+    cursor.execute("SELECT perro_visto, foto_visto FROM perros WHERE perro_visto IS NOT NULL")
+    vistos = cursor.fetchall()
+    conn.close()
+
+    if not perdidos or not vistos:
+        return 0
+
+    total = 0
+    for p_raw, f_perd in perdidos:
+        try:
+            datos_p = json.loads(p_raw) if p_raw else {}
+        except Exception:
+            datos_p = {}
+
+        for v_raw, f_vist in vistos:
+            try:
+                datos_v = json.loads(v_raw) if v_raw else {}
+            except Exception:
+                datos_v = {}
+
+            score_total, _, _ = calcular_score_par(datos_p, f_perd, datos_v, f_vist)
+            if score_total > 50:
+                total += 1
+
+    return total
 
 
 def sonar_campanita():
@@ -499,6 +539,14 @@ else:
     st.markdown("<h1 style='text-align: center;'>🐾 Perros Perdidos y Vistos</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Elegí una opción para cargar foto y datos y comparar imágenes:</p>", unsafe_allow_html=True)
 
+    coincidencias_50 = contar_coincidencias_mayores_50()
+    _, col_metric, _ = st.columns([1.5, 1, 1.5])
+    with col_metric:
+        st.metric(
+            label="Coincidencias encontradas (> 50%)",
+            value=coincidencias_50,
+        )
+
     col_op1, col_op2 = st.columns(2)
     with col_op1:
         with st.container(border=True):
@@ -653,4 +701,3 @@ else:
                     st.error(f"Error de base de datos SQLite al guardar: {e}")
 
     render_footer_principal()
-    
