@@ -22,7 +22,7 @@ MAX_FILE_BYTES = 6 * 1024 * 1024  # 6 MB máximo por foto
 MAX_RESULTADOS = 15
 MAX_INTENTOS_LOGIN = 5
 BLOQUEO_SEGUNDOS = 60
-UMBRAL_BASE_COINCIDENCIA = 82  # Base desde 82%
+UMBRAL_CONTADOR_COINCIDENCIA = 60  # Cuenta coincidencias mayores al 60%
 
 Image.MAX_IMAGE_PIXELS = 20_000_000  # Previene bombas de descompresión en imágenes gigantes
 
@@ -178,12 +178,10 @@ def extraer_descriptores_imagen(foto_bytes):
                 tonos_claros_oscuros[2] += 1
 
         # --- 2. FORMA Y CONTORNO DEL ANIMAL ---
-        # Normalizamos tamaño para comparar estructura/forma con independencia de resolución
         forma_rgb = sujeto_rgb.resize((120, 120))
         gray_img = forma_rgb.convert("L")
         edges_img = gray_img.filter(ImageFilter.FIND_EDGES)
 
-        # Combinamos silueta (luminancia suavizada) + bordes/forma del cuerpo
         grid_size = 12
         cell_w = 120 // grid_size
         cell_h = 120 // grid_size
@@ -193,7 +191,6 @@ def extraer_descriptores_imagen(foto_bytes):
         forma_vec = []
         for gy in range(grid_size):
             for gx in range(grid_size):
-                # Peso mayor hacia el centro de la grilla (donde suele ubicarse el perro)
                 dy = (gy - (grid_size - 1) / 2.0) / ((grid_size - 1) / 2.0)
                 dx = (gx - (grid_size - 1) / 2.0) / ((grid_size - 1) / 2.0)
                 peso_espacial = max(0.35, 1.15 - 0.45 * math.sqrt(dx * dx + dy * dy))
@@ -205,13 +202,11 @@ def extraer_descriptores_imagen(foto_bytes):
                         idx = row_off + px
                         g_val = gray_px[idx] / 255.0
                         e_val = edge_px[idx] / 255.0
-                        # Resalta contornos y estructura interna del pelaje/forma
                         suma_forma += (0.55 * e_val) + (0.45 * abs(g_val - 0.5))
 
                 promedio_celda = (suma_forma / (cell_w * cell_h)) * peso_espacial
                 forma_vec.append(promedio_celda)
 
-        # Proporción de aspecto normalizada (ancho/alto del recorte)
         w_s, h_s = sujeto_rgb.size
         ratio_aspecto = min(2.0, max(0.5, w_s / max(1, h_s)))
 
@@ -244,7 +239,6 @@ def calcular_similitud_imagen(foto_a, foto_b):
     sim_proporcion = max(0.0, 1.0 - (diff_ratio / 1.5))
     sim_forma = (0.80 * sim_grilla_forma) + (0.20 * sim_proporcion)
 
-    # Curva suave para que similitudes reales de color + forma se reflejen con claridad
     combinada = (0.45 * sim_color) + (0.55 * sim_forma)
     ajustada = combinada ** 0.85
     return int(round(max(0.0, min(1.0, ajustada)) * 100))
@@ -386,8 +380,11 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
     return coincidencias[:MAX_RESULTADOS]
 
 
-def contar_coincidencias_base_82():
-    """Cuenta cuántos pares entre perros perdidos y perros vistos alcanzan la base del 82%."""
+def contar_y_marcar_coincidencias_mayores_60():
+    """
+    Cuenta cuántos pares entre perros perdidos y perros vistos superan el 60%
+    y devuelve el total junto con el incremento respecto al conteo previo en sesión.
+    """
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT perro_perdido, foto_perdido FROM perros WHERE perro_perdido IS NOT NULL")
@@ -396,27 +393,36 @@ def contar_coincidencias_base_82():
     vistos = cursor.fetchall()
     conn.close()
 
-    if not perdidos or not vistos:
-        return 0
-
-    total = 0
-    for p_raw, f_perd in perdidos:
-        try:
-            datos_p = json.loads(p_raw) if p_raw else {}
-        except Exception:
-            datos_p = {}
-
-        for v_raw, f_vist in vistos:
+    total_actual = 0
+    if perdidos and vistos:
+        for p_raw, f_perd in perdidos:
             try:
-                datos_v = json.loads(v_raw) if v_raw else {}
+                datos_p = json.loads(p_raw) if p_raw else {}
             except Exception:
-                datos_v = {}
+                datos_p = {}
 
-            score_total, _, _ = calcular_score_par(datos_p, f_perd, datos_v, f_vist)
-            if score_total >= UMBRAL_BASE_COINCIDENCIA:
-                total += 1
+            for v_raw, f_vist in vistos:
+                try:
+                    datos_v = json.loads(v_raw) if v_raw else {}
+                except Exception:
+                    datos_v = {}
 
-    return total
+                score_total, _, _ = calcular_score_par(datos_p, f_perd, datos_v, f_vist)
+                if score_total > UMBRAL_CONTADOR_COINCIDENCIA:
+                    total_actual += 1
+
+    previo = st.session_state.get("contador_60_previo")
+    if previo is None:
+        delta_str = None
+    elif total_actual > previo:
+        delta_str = f"+{total_actual - previo}"
+    elif total_actual < previo:
+        delta_str = f"{total_actual - previo}"
+    else:
+        delta_str = None
+
+    st.session_state["contador_60_previo"] = total_actual
+    return total_actual, delta_str
 
 
 def sonar_campanita():
@@ -631,13 +637,19 @@ else:
     st.markdown("<h1 style='text-align: center;'>🐾 Perros Perdidos y Vistos</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Elegí una opción para cargar foto y datos y comparar imágenes:</p>", unsafe_allow_html=True)
 
-    total_coincidencias = contar_coincidencias_base_82()
+    total_coincidencias, delta_coincidencias = contar_y_marcar_coincidencias_mayores_60()
     _, col_metric, _ = st.columns([1.5, 1, 1.5])
     with col_metric:
         st.metric(
             label="Coincidencias",
             value=total_coincidencias,
+            delta=delta_coincidencias,
         )
+        if total_coincidencias > 0:
+            st.markdown(
+                f"<div style='text-align:center; font-size:0.85rem; color:#1b7a3d; font-weight:600;'>✓ Marcadas {total_coincidencias} coincidencia(s) mayores al 60%</div>",
+                unsafe_allow_html=True,
+            )
 
     col_op1, col_op2 = st.columns(2)
     with col_op1:
