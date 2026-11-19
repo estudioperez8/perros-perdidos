@@ -51,16 +51,13 @@ def procesar_foto(archivo_subido):
         return None
     try:
         img = Image.open(io.BytesIO(raw_bytes))
-        if img.mode in ("RGBA", "P", "LA"):
-            img = img.convert("RGB")
-        elif img.mode != "RGB":
+        if img.mode != "RGB":
             img = img.convert("RGB")
         img.thumbnail((1200, 1200))
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
     except Exception:
-        # Si Pillow no puede abrir un formato especial, guardamos los bytes originales
         return raw_bytes
 
 
@@ -94,7 +91,7 @@ def guardar_registro(tipo_reporte, nombre, raza, tamanio, color, zona, contacto,
 
 
 def buscar_cruces(tipo_opuesto, zona, color, tamanio):
-    """Cruza información entre 'Perdido' y 'Visto o Encontrado'."""
+    """Cruza información entre 'Perdido' y 'Visto / Encontrado'."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM perros WHERE tipo_reporte = ? ORDER BY fecha DESC", (tipo_opuesto,))
@@ -122,7 +119,6 @@ def buscar_cruces(tipo_opuesto, zona, color, tamanio):
             puntaje += 1
             motivos.append(f"Tamaño ({r_tam})")
 
-        # Si el usuario no cargó filtros de zona/color/tamaño, mostramos los últimos registros del tipo opuesto
         if not zona_q and not color_q and (not tamanio or tamanio == "No sé / No especificado"):
             cruces.append((row, 0, ["Registro reciente"]))
         elif puntaje > 0:
@@ -159,17 +155,12 @@ def mostrar_cruces(titulo_alerta, cruces, etiqueta_contacto):
                 st.markdown(f"**{etiqueta_contacto}:** `{r_cont}`")
 
 
-# --- NAVEGACIÓN PRINCIPAL (2 OPCIONES CLARAS AL ENTRAR) ---
+# --- NAVEGACIÓN PRINCIPAL ---
 if "pantalla_activa" not in st.session_state:
     st.session_state["pantalla_activa"] = None
 
 st.sidebar.title("Menú")
-modo_sidebar = st.sidebar.radio(
-    "Ir a:",
-    ["Inicio (2 opciones)", "Administrador"],
-    index=0 if st.session_state.get("modo_sidebar", "Inicio (2 opciones)") == "Inicio (2 opciones)" else 1,
-)
-st.session_state["modo_sidebar"] = modo_sidebar
+modo_sidebar = st.sidebar.radio("Ir a:", ["Inicio (2 opciones)", "Administrador"])
 
 # --- MODO ADMINISTRADOR ---
 if modo_sidebar == "Administrador":
@@ -229,16 +220,16 @@ if modo_sidebar == "Administrador":
                         conn.close()
                         st.rerun()
 
-# --- PANTALLA PRINCIPAL: 2 OPCIONES ---
+# --- PANTALLA PRINCIPAL: SOLO 2 OPCIONES AL ENTRAR ---
 else:
     st.markdown("<h1 style='text-align: center;'>🐾 Perros Perdidos y Encontrados</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Elegí una opción para cargar datos y foto y cruzar información:</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Elegí una opción para cargar foto y datos y cruzar información:</p>", unsafe_allow_html=True)
 
     col_op1, col_op2 = st.columns(2)
     with col_op1:
         with st.container(border=True):
             st.markdown("### ¿Perdiste a tu perro?")
-            st.write("Cargá la foto y los datos de tu perro perdido para guardarlo y ver si alguien ya reportó haberlo visto o encontrado.")
+            st.write("Entrá acá para cargar la foto y los datos de tu perro perdido y cruzarlo con perros vistos o encontrados.")
             if st.button("Entrar: Perdiste a tu perro", use_container_width=True, type="primary"):
                 st.session_state["pantalla_activa"] = "perdido"
                 st.rerun()
@@ -246,29 +237,29 @@ else:
     with col_op2:
         with st.container(border=True):
             st.markdown("### ¿Viste un perro perdido o lo encontraste?")
-            st.write("Cargá la foto y los datos del perro que viste o encontraste para cruzarlo con los perros reportados como perdidos.")
+            st.write("Entrá acá para cargar la foto y los datos del perro que viste o encontraste y cruzarlo con perros perdidos.")
             if st.button("Entrar: Viste un perro o lo encontraste", use_container_width=True):
                 st.session_state["pantalla_activa"] = "visto"
                 st.rerun()
 
     pantalla = st.session_state.get("pantalla_activa")
 
-    # --- OPCIÓN 1: PERDISTE A TU PERRO ---
+    # --- OPCIÓN 1: PERDISTE A TU PERRO (CARGA FOTO AL ENTRAR AQUÍ) ---
     if pantalla == "perdido":
         st.markdown("---")
         if st.button("← Volver a las 2 opciones"):
             st.session_state["pantalla_activa"] = None
             st.rerun()
 
-        st.subheader("Cargar datos y foto de tu perro perdido")
+        st.subheader("¿Perdiste a tu perro? — Cargá su foto y sus datos")
 
         foto_perdido = st.file_uploader(
-            "Foto de tu perro perdido",
+            "Cargá la foto de tu perro perdido",
             type=["jpg", "jpeg", "png", "webp", "heic"],
             key="uploader_perdido",
         )
         if foto_perdido is not None:
-            st.image(foto_perdido, width=220, caption="Foto seleccionada")
+            st.image(foto_perdido, width=220, caption="Foto cargada")
 
         with st.form("form_perdido"):
             c1, c2 = st.columns(2)
@@ -283,7 +274,7 @@ else:
 
             fecha = st.date_input("Fecha en que se perdió", value=date.today())
             descripcion = st.text_area("Señas particulares, collar, edad aproximada o detalles")
-            guardar_btn = st.form_submit_button("Guardar perro perdido y cruzar con vistos/encontrados")
+            guardar_btn = st.form_submit_button("Guardar y cruzar con vistos / encontrados")
 
         if guardar_btn:
             if not zona.strip() or not contacto.strip():
@@ -307,25 +298,25 @@ else:
                 mostrar_cruces(
                     "Posibles coincidencias en perros VISTOS o ENCONTRADOS",
                     cruces,
-                    "Contacto de quien lo vio/encontró",
+                    "Contacto de quien lo vio / encontró",
                 )
 
-    # --- OPCIÓN 2: VISTE UN PERRO PERDIDO O LO ENCONTRASTE ---
+    # --- OPCIÓN 2: VISTE UN PERRO PERDIDO O LO ENCONTRASTE (CARGA FOTO AL ENTRAR AQUÍ) ---
     elif pantalla == "visto":
         st.markdown("---")
         if st.button("← Volver a las 2 opciones"):
             st.session_state["pantalla_activa"] = None
             st.rerun()
 
-        st.subheader("Cargar datos y foto del perro que viste o encontraste")
+        st.subheader("¿Viste un perro perdido o lo encontraste? — Cargá su foto y sus datos")
 
         foto_visto = st.file_uploader(
-            "Foto del perro que viste o encontraste",
+            "Cargá la foto del perro que viste o encontraste",
             type=["jpg", "jpeg", "png", "webp", "heic"],
             key="uploader_visto",
         )
         if foto_visto is not None:
-            st.image(foto_visto, width=220, caption="Foto seleccionada")
+            st.image(foto_visto, width=220, caption="Foto cargada")
 
         with st.form("form_visto"):
             c1, c2 = st.columns(2)
@@ -340,7 +331,7 @@ else:
 
             fecha = st.date_input("Fecha", value=date.today())
             descripcion = st.text_area("Señas particulares, collar, comportamiento o lugar exacto")
-            cruzar_btn = st.form_submit_button("Guardar reporte y cruzar con perros perdidos")
+            cruzar_btn = st.form_submit_button("Guardar y cruzar con perros perdidos")
 
         if cruzar_btn:
             if not zona.strip() or not contacto.strip():
