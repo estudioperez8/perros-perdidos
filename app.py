@@ -294,8 +294,8 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
     return coincidencias[:MAX_RESULTADOS]
 
 
-def contar_coincidencias_desde_80():
-    """Cuenta cuántos pares entre perros perdidos y perros vistos tienen 80% o más de coincidencia."""
+def contar_coincidencias_desde_82():
+    """Cuenta cuántos pares entre perros perdidos y perros vistos tienen 82% o más de coincidencia."""
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT perro_perdido, foto_perdido FROM perros WHERE perro_perdido IS NOT NULL")
@@ -321,7 +321,7 @@ def contar_coincidencias_desde_80():
                 datos_v = {}
 
             score_total, _, _ = calcular_score_par(datos_p, f_perd, datos_v, f_vist)
-            if score_total >= 80:
+            if score_total >= 82:
                 total += 1
 
     return total
@@ -539,12 +539,12 @@ else:
     st.markdown("<h1 style='text-align: center;'>🐾 Perros Perdidos y Vistos</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Elegí una opción para cargar foto y datos y comparar imágenes:</p>", unsafe_allow_html=True)
 
-    coincidencias_80 = contar_coincidencias_desde_80()
+    coincidencias_82 = contar_coincidencias_desde_82()
     _, col_metric, _ = st.columns([1.5, 1, 1.5])
     with col_metric:
         st.metric(
-            label="Coincidencias en porcentaje",
-            value=coincidencias_80,
+            label="Coincidencias",
+            value=coincidencias_82,
         )
 
     col_op1, col_op2 = st.columns(2)
