@@ -91,7 +91,6 @@ def extraer_descriptores_imagen(foto_bytes):
             lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
             gray_vec.append(lum)
 
-        # Normalización de luminancia (media 0, norma 1) para tolerar cambios de luz
         mean_g = sum(gray_vec) / len(gray_vec)
         gray_centered = [x - mean_g for x in gray_vec]
 
@@ -118,7 +117,6 @@ def calcular_similitud_imagen(foto_a, foto_b):
     sim_rgb = max(0.0, min(1.0, sum(x * y for x, y in zip(rgb_a, rgb_b))))
     sim_gray = max(0.0, min(1.0, (sum(x * y for x, y in zip(gray_a, gray_b)) + 1.0) / 2.0))
 
-    # Priorizamos similitud cromática + estructura/luminancia
     combinada = (0.65 * sim_rgb) + (0.35 * sim_gray)
     return int(round(combinada * 100))
 
@@ -130,9 +128,7 @@ def tokenizar(texto):
 
 
 def guardar_en_columna(columna_destino, datos_dict, foto_bytes):
-    """
-    Guarda en la columna 'perro_perdido' + 'foto_perdido' o en 'perro_visto' + 'foto_visto'.
-    """
+    """Guarda en la columna perro_perdido/foto_perdido o perro_visto/foto_visto."""
     reg_id = str(uuid.uuid4())[:8]
     datos_json = json.dumps(datos_dict, ensure_ascii=False)
     blob = sqlite3.Binary(foto_bytes) if foto_bytes is not None else None
@@ -163,10 +159,7 @@ def guardar_en_columna(columna_destino, datos_dict, foto_bytes):
 
 
 def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
-    """
-    Compara los datos y especialmente la imagen contra todos los registros
-    almacenados en la columna opuesta ('perro_visto' o 'perro_perdido').
-    """
+    """Compara datos y especialmente la imagen contra la columna opuesta."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -192,7 +185,6 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
 
         sim_img = calcular_similitud_imagen(foto_nueva, foto_cand)
 
-        # Puntaje de datos (0 a 100)
         puntos_datos = 0.0
         peso_datos = 0.0
         motivos = []
@@ -229,7 +221,6 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
 
         score_datos = int(round((puntos_datos / peso_datos) * 100)) if peso_datos > 0 else None
 
-        # Priorizamos fuertemente la imagen (70% imagen + 30% datos cuando hay foto en ambos lados)
         if sim_img is not None and score_datos is not None:
             score_total = int(round((0.70 * sim_img) + (0.30 * score_datos)))
             motivos.insert(0, f"Imagen: {sim_img}%")
@@ -327,6 +318,39 @@ def mostrar_coincidencias(titulo, coincidencias, etiqueta_contacto):
                 if d.get("descripcion"):
                     st.markdown(f"**Señas / Detalles:** {d.get('descripcion')}")
                 st.markdown(f"**📞 {etiqueta_contacto}:** `{d.get('contacto') or 'No cargado'}`")
+
+
+def render_footer_principal():
+    """Pie de página en la página principal con 'created by Jumpy' y carita de perro con gorrito de Santa Claus."""
+    st.markdown("---")
+    st.markdown(
+        """
+        <div style="display: flex; align-items: center; justify-content: center; gap: 10px; padding: 14px 0 6px 0; color: #555;">
+            <svg width="36" height="36" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-label="Perro con gorrito de Santa Claus">
+                <!-- Orejas -->
+                <ellipse cx="14" cy="34" rx="7" ry="13" transform="rotate(15 14 34)" fill="#8D5524"/>
+                <ellipse cx="50" cy="34" rx="7" ry="13" transform="rotate(-15 50 34)" fill="#8D5524"/>
+                <!-- Cara del perro -->
+                <ellipse cx="32" cy="36" rx="18" ry="15" fill="#C68642"/>
+                <ellipse cx="32" cy="41" rx="10" ry="8" fill="#F5E6D3"/>
+                <!-- Ojos -->
+                <circle cx="25" cy="33" r="2.6" fill="#1E1E1E"/>
+                <circle cx="39" cy="33" r="2.6" fill="#1E1E1E"/>
+                <circle cx="24.2" cy="32.2" r="0.9" fill="#FFFFFF"/>
+                <circle cx="38.2" cy="32.2" r="0.9" fill="#FFFFFF"/>
+                <!-- Nariz y boca -->
+                <ellipse cx="32" cy="39" rx="3.4" ry="2.4" fill="#1E1E1E"/>
+                <path d="M28 43 Q32 46.5 36 43" stroke="#1E1E1E" stroke-width="2" fill="none" stroke-linecap="round"/>
+                <!-- Gorrito de Santa Claus -->
+                <path d="M16 25 Q32 6 49 23 L45 27 Q32 14 19 27 Z" fill="#D92626"/>
+                <rect x="15" y="23" width="34" height="6" rx="3" fill="#FFFFFF"/>
+                <circle cx="49" cy="23" r="4.5" fill="#FFFFFF"/>
+            </svg>
+            <span style="font-size: 0.95rem; font-weight: 500;">created by Jumpy</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # --- ESTADO ---
@@ -557,3 +581,5 @@ else:
                     )
                 except sqlite3.Error as e:
                     st.error(f"Error de base de datos SQLite al guardar: {e}")
+
+    render_footer_principal()
