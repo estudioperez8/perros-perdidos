@@ -1,28 +1,50 @@
+import html
 import io
 import json
 import math
 import os
 import re
 import sqlite3
+import time
 import uuid
 from datetime import date
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 
-# --- CONFIGURACIÓN INICIAL ---
+# --- CONFIGURACIÓN INICIAL Y SEGURIDAD ---
 st.set_page_config(page_title="Perros Perdidos", page_icon="🐾", layout="wide")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "perros.db")
 
-ADMIN_USER = "admin2026"
-ADMIN_PASS = "2026"
+MAX_FILE_BYTES = 6 * 1024 * 1024  # 6 MB máximo por foto
+MAX_RESULTADOS = 15
+MAX_INTENTOS_LOGIN = 5
+BLOQUEO_SEGUNDOS = 60
+
+Image.MAX_IMAGE_PIXELS = 20_000_000  # Previene bombas de descompresión en imágenes gigantes
+
+try:
+    ADMIN_USER = str(st.secrets["ADMIN_USER"])
+except Exception:
+    ADMIN_USER = os.getenv("ADMIN_USER", "admin2026")
+
+try:
+    ADMIN_PASS = str(st.secrets["ADMIN_PASS"])
+except Exception:
+    ADMIN_PASS = os.getenv("ADMIN_PASS", "2026")
+
+
+def get_conn():
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
 
 
 # --- BASE DE DATOS CON COLUMNAS SEPARADAS: PERROS PERDIDOS Y PERROS VISTOS ---
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
 
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='perros'")
@@ -55,12 +77,26 @@ def init_db():
 init_db()
 
 
+def limpiar_texto(valor, max_len=300):
+    if not valor:
+        return ""
+    limpio = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", str(valor)).strip()
+    return limpio[:max_len]
+
+
 def procesar_foto(raw_bytes):
-    """Convierte cualquier imagen a bytes JPEG normalizados."""
+    """Valida tamaño y convierte la imagen a JPEG limpio."""
     if not raw_bytes:
+        return None
+    if len(raw_bytes) > MAX_FILE_BYTES:
+        st.warning("La imagen supera el límite de 6 MB. Elegí una foto más liviana.")
         return None
     try:
         img = Image.open(io.BytesIO(raw_bytes))
+        ancho, alto = img.size
+        if ancho <= 0 or alto <= 0 or (ancho * alto) > Image.MAX_IMAGE_PIXELS:
+            st.warning("Las dimensiones de la imagen no son válidas o son demasiado grandes.")
+            return None
         img = ImageOps.exif_transpose(img)
         if img.mode != "RGB":
             img = img.convert("RGB")
@@ -69,7 +105,8 @@ def procesar_foto(raw_bytes):
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
     except Exception:
-        return raw_bytes
+        st.warning("No se pudo procesar la imagen seleccionada. Probá con otro archivo JPG, PNG o WEBP.")
+        return None
 
 
 def extraer_descriptores_imagen(foto_bytes):
@@ -133,7 +170,7 @@ def guardar_en_columna(columna_destino, datos_dict, foto_bytes):
     datos_json = json.dumps(datos_dict, ensure_ascii=False)
     blob = sqlite3.Binary(foto_bytes) if foto_bytes is not None else None
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
 
     if columna_destino == "perdido":
@@ -160,7 +197,7 @@ def guardar_en_columna(columna_destino, datos_dict, foto_bytes):
 
 def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
     """Compara datos y especialmente la imagen contra la columna opuesta."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     cursor = conn.cursor()
 
     if columna_opuesta == "visto":
@@ -247,7 +284,7 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
             )
 
     coincidencias.sort(key=lambda x: (x["sim_img"] if x["sim_img"] is not None else -1, x["score"]), reverse=True)
-    return coincidencias
+    return coincidencias[:MAX_RESULTADOS]
 
 
 def sonar_campanita():
@@ -299,6 +336,15 @@ def mostrar_coincidencias(titulo, coincidencias, etiqueta_contacto):
 
     for item in coincidencias:
         d = item["datos"]
+        nombre_seguro = html.escape(str(d.get("nombre") or "Sin nombre"))
+        raza_segura = html.escape(str(d.get("raza") or "No especificada"))
+        tam_seguro = html.escape(str(d.get("tamanio") or "-"))
+        color_seguro = html.escape(str(d.get("color") or "-"))
+        zona_segura = html.escape(str(d.get("zona") or "-"))
+        fecha_segura = html.escape(str(d.get("fecha") or item["fecha_registro"]))
+        desc_segura = html.escape(str(d.get("descripcion") or ""))
+        contacto_seguro = html.escape(str(d.get("contacto") or "No cargado"))
+
         with st.container(border=True):
             col_img, col_info = st.columns([1, 2.6])
             with col_img:
@@ -312,12 +358,12 @@ def mostrar_coincidencias(titulo, coincidencias, etiqueta_contacto):
                 if item["motivos"]:
                     st.caption("Detalle: " + " • ".join(item["motivos"]))
                 if d.get("nombre"):
-                    st.markdown(f"**Nombre:** {d.get('nombre')}")
-                st.markdown(f"**Raza:** {d.get('raza') or 'No especificada'} | **Tamaño:** {d.get('tamanio') or '-'} | **Color:** {d.get('color') or '-'}")
-                st.markdown(f"**Zona:** {d.get('zona') or '-'} | **Fecha:** {d.get('fecha') or item['fecha_registro']}")
-                if d.get("descripcion"):
-                    st.markdown(f"**Señas / Detalles:** {d.get('descripcion')}")
-                st.markdown(f"**📞 {etiqueta_contacto}:** `{d.get('contacto') or 'No cargado'}`")
+                    st.markdown(f"**Nombre:** {nombre_seguro}")
+                st.markdown(f"**Raza:** {raza_segura} | **Tamaño:** {tam_seguro} | **Color:** {color_seguro}")
+                st.markdown(f"**Zona:** {zona_segura} | **Fecha:** {fecha_segura}")
+                if desc_segura:
+                    st.markdown(f"**Señas / Detalles:** {desc_segura}")
+                st.markdown(f"**📞 {html.escape(etiqueta_contacto)}:** `{contacto_seguro}`")
 
 
 def render_footer_principal():
@@ -360,6 +406,10 @@ if "foto_perdido_bytes" not in st.session_state:
     st.session_state["foto_perdido_bytes"] = None
 if "foto_visto_bytes" not in st.session_state:
     st.session_state["foto_visto_bytes"] = None
+if "login_intentos" not in st.session_state:
+    st.session_state["login_intentos"] = 0
+if "login_bloqueado_hasta" not in st.session_state:
+    st.session_state["login_bloqueado_hasta"] = 0.0
 
 st.sidebar.title("Menú")
 modo_sidebar = st.sidebar.radio("Ir a:", ["Inicio (2 opciones)", "Administrador"])
@@ -369,16 +419,31 @@ if modo_sidebar == "Administrador":
     st.title("Panel de Administrador")
 
     if not st.session_state.get("is_admin", False):
-        with st.form("form_login_admin"):
-            u = st.text_input("Usuario")
-            p = st.text_input("Contraseña", type="password")
-            entrar = st.form_submit_button("Ingresar")
-        if entrar:
-            if u == ADMIN_USER and p == ADMIN_PASS:
-                st.session_state["is_admin"] = True
-                st.rerun()
-            else:
-                st.error("Credenciales incorrectas.")
+        ahora = time.time()
+        bloqueado_hasta = float(st.session_state.get("login_bloqueado_hasta", 0.0))
+        if ahora < bloqueado_hasta:
+            restante = int(math.ceil(bloqueado_hasta - ahora))
+            st.error(f"Demasiados intentos fallidos. Esperá {restante} segundos para volver a intentar.")
+        else:
+            with st.form("form_login_admin"):
+                u = st.text_input("Usuario", max_chars=80)
+                p = st.text_input("Contraseña", type="password", max_chars=80)
+                entrar = st.form_submit_button("Ingresar")
+            if entrar:
+                if u == ADMIN_USER and p == ADMIN_PASS:
+                    st.session_state["is_admin"] = True
+                    st.session_state["login_intentos"] = 0
+                    st.session_state["login_bloqueado_hasta"] = 0.0
+                    st.rerun()
+                else:
+                    intentos = int(st.session_state.get("login_intentos", 0)) + 1
+                    st.session_state["login_intentos"] = intentos
+                    if intentos >= MAX_INTENTOS_LOGIN:
+                        st.session_state["login_bloqueado_hasta"] = time.time() + BLOQUEO_SEGUNDOS
+                        st.session_state["login_intentos"] = 0
+                        st.error(f"Credenciales incorrectas. Acceso bloqueado por {BLOQUEO_SEGUNDOS} segundos.")
+                    else:
+                        st.error(f"Credenciales incorrectas. Intento {intentos} de {MAX_INTENTOS_LOGIN}.")
     else:
         col_top1, col_top2 = st.columns([3, 1])
         with col_top1:
@@ -388,7 +453,7 @@ if modo_sidebar == "Administrador":
                 st.session_state["is_admin"] = False
                 st.rerun()
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("SELECT id, fecha_registro, perro_perdido, foto_perdido, perro_visto, foto_visto FROM perros ORDER BY fecha_registro DESC")
         registros = cursor.fetchall()
@@ -400,7 +465,8 @@ if modo_sidebar == "Administrador":
             p_vist = json.loads(p_vist_raw) if p_vist_raw else None
             etiqueta = "Perro Perdido" if p_perd else "Perro Visto"
             datos_ref = p_perd or p_vist or {}
-            with st.expander(f"[{etiqueta}] {datos_ref.get('nombre') or datos_ref.get('raza') or 'Sin título'} - {datos_ref.get('zona') or '-'} ({fecha_reg}) | ID: {reg_id}"):
+            titulo_exp = f"[{etiqueta}] {datos_ref.get('nombre') or datos_ref.get('raza') or 'Sin título'} - {datos_ref.get('zona') or '-'} ({fecha_reg}) | ID: {reg_id}"
+            with st.expander(titulo_exp):
                 c_perd, c_vist = st.columns(2)
                 with c_perd:
                     st.markdown("**Columna Perro Perdido**")
@@ -408,7 +474,7 @@ if modo_sidebar == "Administrador":
                         if f_perd:
                             st.image(bytes(f_perd), width=180)
                         for k, v in p_perd.items():
-                            st.write(f"- **{k}:** {v or '-'}")
+                            st.write(f"- **{html.escape(str(k))}:** {html.escape(str(v or '-'))}")
                     else:
                         st.caption("Vacío en este registro")
                 with c_vist:
@@ -417,11 +483,11 @@ if modo_sidebar == "Administrador":
                         if f_vist:
                             st.image(bytes(f_vist), width=180)
                         for k, v in p_vist.items():
-                            st.write(f"- **{k}:** {v or '-'}")
+                            st.write(f"- **{html.escape(str(k))}:** {html.escape(str(v or '-'))}")
                     else:
                         st.caption("Vacío en este registro")
                 if st.button("Eliminar registro", key=f"borrar_{reg_id}"):
-                    conn = sqlite3.connect(DB_PATH)
+                    conn = get_conn()
                     cur = conn.cursor()
                     cur.execute("DELETE FROM perros WHERE id = ?", (reg_id,))
                     conn.commit()
@@ -463,7 +529,7 @@ else:
         st.subheader("¿Perdiste a tu perro? — Cargá su foto y sus datos")
 
         archivo_p = st.file_uploader(
-            "Cargá la foto de tu perro perdido",
+            "Cargá la foto de tu perro perdido (máx. 6 MB)",
             type=["jpg", "jpeg", "png", "webp", "heic"],
             key="uploader_perdido",
         )
@@ -477,32 +543,34 @@ else:
         with st.form("form_perdido"):
             c1, c2 = st.columns(2)
             with c1:
-                nombre = st.text_input("Nombre del perro")
-                raza = st.text_input("Raza")
+                nombre = st.text_input("Nombre del perro", max_chars=80)
+                raza = st.text_input("Raza", max_chars=80)
                 tamanio = st.selectbox("Tamaño", ["No sé / No especificado", "Pequeño", "Mediano", "Grande"])
             with c2:
-                color = st.text_input("Color / Pelaje")
-                zona = st.text_input("Barrio o zona donde se perdió *")
-                contacto = st.text_input("Teléfono / WhatsApp de contacto *")
+                color = st.text_input("Color / Pelaje", max_chars=100)
+                zona = st.text_input("Barrio o zona donde se perdió *", max_chars=120)
+                contacto = st.text_input("Teléfono / WhatsApp de contacto *", max_chars=80)
 
             fecha = st.date_input("Fecha en que se perdió", value=date.today())
-            descripcion = st.text_area("Señas particulares, collar, edad aproximada o detalles")
+            descripcion = st.text_area("Señas particulares, collar, edad aproximada o detalles", max_chars=500)
             guardar_btn = st.form_submit_button("Guardar y comparar imagen con perros vistos")
 
         if guardar_btn:
-            if not zona.strip() or not contacto.strip():
+            zona_limpia = limpiar_texto(zona, 120)
+            contacto_limpio = limpiar_texto(contacto, 80)
+            if not zona_limpia or not contacto_limpio:
                 st.error("Completá al menos **Barrio o zona** y **Teléfono / WhatsApp de contacto**.")
             else:
                 try:
                     datos_perdido = {
-                        "nombre": nombre.strip(),
-                        "raza": raza.strip(),
+                        "nombre": limpiar_texto(nombre, 80),
+                        "raza": limpiar_texto(raza, 80),
                         "tamanio": tamanio,
-                        "color": color.strip(),
-                        "zona": zona.strip(),
-                        "contacto": contacto.strip(),
+                        "color": limpiar_texto(color, 100),
+                        "zona": zona_limpia,
+                        "contacto": contacto_limpio,
                         "fecha": str(fecha),
-                        "descripcion": descripcion.strip(),
+                        "descripcion": limpiar_texto(descripcion, 500),
                     }
                     foto_final = foto_p_guardada
                     guardar_en_columna("perdido", datos_perdido, foto_final)
@@ -528,7 +596,7 @@ else:
         st.subheader("¿Viste un perro perdido o lo encontraste? — Cargá su foto y sus datos")
 
         archivo_v = st.file_uploader(
-            "Cargá la foto del perro visto",
+            "Cargá la foto del perro visto (máx. 6 MB)",
             type=["jpg", "jpeg", "png", "webp", "heic"],
             key="uploader_visto",
         )
@@ -543,31 +611,33 @@ else:
             c1, c2 = st.columns(2)
             with c1:
                 situacion = st.selectbox("¿Lo viste o lo encontraste?", ["Visto", "Encontrado"])
-                raza = st.text_input("Raza aproximada")
+                raza = st.text_input("Raza aproximada", max_chars=80)
                 tamanio = st.selectbox("Tamaño", ["No sé / No especificado", "Pequeño", "Mediano", "Grande"])
             with c2:
-                color = st.text_input("Color / Pelaje")
-                zona = st.text_input("Barrio o zona donde lo viste *")
-                contacto = st.text_input("Tu teléfono / WhatsApp de contacto *")
+                color = st.text_input("Color / Pelaje", max_chars=100)
+                zona = st.text_input("Barrio o zona donde lo viste *", max_chars=120)
+                contacto = st.text_input("Tu teléfono / WhatsApp de contacto *", max_chars=80)
 
             fecha = st.date_input("Fecha", value=date.today())
-            descripcion = st.text_area("Señas particulares, collar, comportamiento o lugar exacto")
+            descripcion = st.text_area("Señas particulares, collar, comportamiento o lugar exacto", max_chars=500)
             cruzar_btn = st.form_submit_button("Guardar y comparar imagen con perros perdidos")
 
         if cruzar_btn:
-            if not zona.strip() or not contacto.strip():
+            zona_limpia = limpiar_texto(zona, 120)
+            contacto_limpio = limpiar_texto(contacto, 80)
+            if not zona_limpia or not contacto_limpio:
                 st.error("Completá al menos **Barrio o zona** y **Tu teléfono / WhatsApp de contacto**.")
             else:
                 try:
                     datos_visto = {
                         "situacion": situacion,
-                        "raza": raza.strip(),
+                        "raza": limpiar_texto(raza, 80),
                         "tamanio": tamanio,
-                        "color": color.strip(),
-                        "zona": zona.strip(),
-                        "contacto": contacto.strip(),
+                        "color": limpiar_texto(color, 100),
+                        "zona": zona_limpia,
+                        "contacto": contacto_limpio,
                         "fecha": str(fecha),
-                        "descripcion": descripcion.strip(),
+                        "descripcion": limpiar_texto(descripcion, 500),
                     }
                     foto_final = foto_v_guardada
                     guardar_en_columna("visto", datos_visto, foto_final)
@@ -583,3 +653,4 @@ else:
                     st.error(f"Error de base de datos SQLite al guardar: {e}")
 
     render_footer_principal()
+    
