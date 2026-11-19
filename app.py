@@ -543,7 +543,7 @@ else:
     _, col_metric, _ = st.columns([1.5, 1, 1.5])
     with col_metric:
         st.metric(
-            label="Coincidencias encontradas (> 50%)",
+            label="Coincidencias encontradas",
             value=coincidencias_50,
         )
 
