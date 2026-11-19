@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import os
 import re
@@ -19,7 +20,7 @@ ADMIN_USER = "admin2026"
 ADMIN_PASS = "2026"
 
 
-# --- BASE DE DATOS CON MIGRACIÓN AUTOMÁTICA ---
+# --- BASE DE DATOS CON COLUMNAS SEPARADAS: PERROS PERDIDOS Y PERROS VISTOS ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -29,8 +30,9 @@ def init_db():
 
     if existe_tabla:
         cursor.execute("PRAGMA table_info(perros)")
-        columnas = [col[1] for col in cursor.fetchall()]
-        if "foto_bytes" not in columnas or "tipo_reporte" not in columnas:
+        columnas = {col[1] for col in cursor.fetchall()}
+        requeridas = {"perro_perdido", "foto_perdido", "perro_visto", "foto_visto"}
+        if not requeridas.issubset(columnas):
             cursor.execute("DROP TABLE perros")
             existe_tabla = False
 
@@ -38,16 +40,11 @@ def init_db():
         cursor.execute("""
             CREATE TABLE perros (
                 id TEXT PRIMARY KEY,
-                tipo_reporte TEXT,
-                nombre TEXT,
-                raza TEXT,
-                tamanio TEXT,
-                color TEXT,
-                zona TEXT,
-                contacto TEXT,
-                fecha TEXT,
-                descripcion TEXT,
-                foto_bytes BLOB
+                fecha_registro TEXT,
+                perro_perdido TEXT,
+                foto_perdido BLOB,
+                perro_visto TEXT,
+                foto_visto BLOB
             )
         """)
 
@@ -59,7 +56,7 @@ init_db()
 
 
 def procesar_foto(raw_bytes):
-    """Normaliza cualquier imagen subida a bytes JPEG limpios."""
+    """Convierte cualquier imagen a bytes JPEG normalizados."""
     if not raw_bytes:
         return None
     try:
@@ -75,33 +72,55 @@ def procesar_foto(raw_bytes):
         return raw_bytes
 
 
-def extraer_vector_visual(foto_bytes):
-    """Genera un vector normalizado de 8x8 RGB (192 valores) para comparar similitud visual."""
+def extraer_descriptores_imagen(foto_bytes):
+    """
+    Extrae un vector combinado de color/estructura (16x16 RGB) y luminancia normalizada
+    para comparar similitud visual entre dos fotos de perros.
+    """
     if not foto_bytes:
         return None
     try:
         img = Image.open(io.BytesIO(bytes(foto_bytes)))
-        img = ImageOps.exif_transpose(img).convert("RGB").resize((8, 8))
+        img = ImageOps.exif_transpose(img).convert("RGB").resize((16, 16))
         pixels = list(img.getdata())
-        vec = []
+
+        rgb_vec = []
+        gray_vec = []
         for r, g, b in pixels:
-            vec.extend([r / 255.0, g / 255.0, b / 255.0])
-        norm = math.sqrt(sum(x * x for x in vec))
-        if norm == 0:
+            rgb_vec.extend([r / 255.0, g / 255.0, b / 255.0])
+            lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+            gray_vec.append(lum)
+
+        # Normalización de luminancia (media 0, norma 1) para tolerar cambios de luz
+        mean_g = sum(gray_vec) / len(gray_vec)
+        gray_centered = [x - mean_g for x in gray_vec]
+
+        norm_rgb = math.sqrt(sum(x * x for x in rgb_vec))
+        norm_gray = math.sqrt(sum(x * x for x in gray_centered))
+        if norm_rgb == 0 or norm_gray == 0:
             return None
-        return [x / norm for x in vec]
+
+        return ([x / norm_rgb for x in rgb_vec], [x / norm_gray for x in gray_centered])
     except Exception:
         return None
 
 
-def similitud_visual(foto_a, foto_b):
-    """Devuelve similitud visual entre 0.0 y 1.0 usando similitud coseno sobre grilla 8x8."""
-    va = extraer_vector_visual(foto_a)
-    vb = extraer_vector_visual(foto_b)
-    if not va or not vb:
+def calcular_similitud_imagen(foto_a, foto_b):
+    """Retorna porcentaje (0 a 100) o None si alguna foto no existe."""
+    desc_a = extraer_descriptores_imagen(foto_a)
+    desc_b = extraer_descriptores_imagen(foto_b)
+    if not desc_a or not desc_b:
         return None
-    score = sum(a * b for a, b in zip(va, vb))
-    return max(0.0, min(1.0, score))
+
+    rgb_a, gray_a = desc_a
+    rgb_b, gray_b = desc_b
+
+    sim_rgb = max(0.0, min(1.0, sum(x * y for x, y in zip(rgb_a, rgb_b))))
+    sim_gray = max(0.0, min(1.0, (sum(x * y for x, y in zip(gray_a, gray_b)) + 1.0) / 2.0))
+
+    # Priorizamos similitud cromática + estructura/luminancia
+    combinada = (0.65 * sim_rgb) + (0.35 * sim_gray)
+    return int(round(combinada * 100))
 
 
 def tokenizar(texto):
@@ -110,104 +129,138 @@ def tokenizar(texto):
     return {t for t in re.findall(r"[a-záéíóúüñ0-9]+", texto.lower()) if len(t) >= 3}
 
 
-def guardar_registro(tipo_reporte, nombre, raza, tamanio, color, zona, contacto, fecha, descripcion, foto_bytes):
-    perro_id = str(uuid.uuid4())[:8]
+def guardar_en_columna(columna_destino, datos_dict, foto_bytes):
+    """
+    Guarda en la columna 'perro_perdido' + 'foto_perdido' o en 'perro_visto' + 'foto_visto'.
+    """
+    reg_id = str(uuid.uuid4())[:8]
+    datos_json = json.dumps(datos_dict, ensure_ascii=False)
+    blob = sqlite3.Binary(foto_bytes) if foto_bytes is not None else None
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO perros (
-            id, tipo_reporte, nombre, raza, tamanio, color, zona, contacto, fecha, descripcion, foto_bytes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            perro_id,
-            tipo_reporte,
-            nombre.strip(),
-            raza.strip(),
-            tamanio,
-            color.strip(),
-            zona.strip(),
-            contacto.strip(),
-            str(fecha),
-            descripcion.strip(),
-            sqlite3.Binary(foto_bytes) if foto_bytes is not None else None,
-        ),
-    )
+
+    if columna_destino == "perdido":
+        cursor.execute(
+            """
+            INSERT INTO perros (id, fecha_registro, perro_perdido, foto_perdido, perro_visto, foto_visto)
+            VALUES (?, ?, ?, ?, NULL, NULL)
+            """,
+            (reg_id, str(date.today()), datos_json, blob),
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO perros (id, fecha_registro, perro_perdido, foto_perdido, perro_visto, foto_visto)
+            VALUES (?, ?, NULL, NULL, ?, ?)
+            """,
+            (reg_id, str(date.today()), datos_json, blob),
+        )
+
     conn.commit()
     conn.close()
-    return perro_id
+    return reg_id
 
 
-def comparar_con_base(tipo_opuesto, zona, color, tamanio, raza, descripcion, foto_bytes):
-    """Compara datos y foto contra todos los registros del grupo opuesto en la base de datos."""
+def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
+    """
+    Compara los datos y especialmente la imagen contra todos los registros
+    almacenados en la columna opuesta ('perro_visto' o 'perro_perdido').
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM perros WHERE tipo_reporte = ? ORDER BY fecha DESC", (tipo_opuesto,))
-    candidatos = cursor.fetchall()
+
+    if columna_opuesta == "visto":
+        cursor.execute("SELECT id, fecha_registro, perro_visto, foto_visto FROM perros WHERE perro_visto IS NOT NULL")
+    else:
+        cursor.execute("SELECT id, fecha_registro, perro_perdido, foto_perdido FROM perros WHERE perro_perdido IS NOT NULL")
+
+    filas = cursor.fetchall()
     conn.close()
 
-    zona_q = zona.strip().lower()
-    color_q = color.strip().lower()
-    tokens_desc = tokenizar(f"{raza} {descripcion} {color}")
+    zona_n = (datos_nuevo.get("zona") or "").strip().lower()
+    color_n = (datos_nuevo.get("color") or "").strip().lower()
+    tam_n = datos_nuevo.get("tamanio") or ""
+    tokens_n = tokenizar(f"{datos_nuevo.get('raza', '')} {datos_nuevo.get('color', '')} {datos_nuevo.get('descripcion', '')}")
 
-    resultados = []
-    for row in candidatos:
-        r_id, r_tipo, r_nombre, r_raza, r_tam, r_color, r_zona, r_cont, r_fecha, r_desc, r_foto = row
+    coincidencias = []
+    for reg_id, fecha_reg, datos_raw, foto_cand in filas:
+        try:
+            datos_c = json.loads(datos_raw) if datos_raw else {}
+        except Exception:
+            datos_c = {}
 
-        puntos = 0.0
-        max_puntos = 0.0
+        sim_img = calcular_similitud_imagen(foto_nueva, foto_cand)
+
+        # Puntaje de datos (0 a 100)
+        puntos_datos = 0.0
+        peso_datos = 0.0
         motivos = []
 
-        if zona_q:
-            max_puntos += 35.0
-            if r_zona and (zona_q in r_zona.lower() or r_zona.lower() in zona_q):
-                puntos += 35.0
-                motivos.append(f"Zona: {r_zona}")
+        zona_c = (datos_c.get("zona") or "").strip().lower()
+        color_c = (datos_c.get("color") or "").strip().lower()
+        tam_c = datos_c.get("tamanio") or ""
+        tokens_c = tokenizar(f"{datos_c.get('raza', '')} {datos_c.get('color', '')} {datos_c.get('descripcion', '')}")
 
-        if color_q:
-            max_puntos += 25.0
-            if r_color and (color_q in r_color.lower() or r_color.lower() in color_q):
-                puntos += 25.0
-                motivos.append(f"Color: {r_color}")
+        if zona_n and zona_c:
+            peso_datos += 40.0
+            if zona_n in zona_c or zona_c in zona_n:
+                puntos_datos += 40.0
+                motivos.append(f"Zona: {datos_c.get('zona')}")
 
-        if tamanio and tamanio != "No sé / No especificado":
-            max_puntos += 15.0
-            if r_tam == tamanio:
-                puntos += 15.0
-                motivos.append(f"Tamaño: {r_tam}")
+        if color_n and color_c:
+            peso_datos += 35.0
+            if color_n in color_c or color_c in color_n:
+                puntos_datos += 35.0
+                motivos.append(f"Color: {datos_c.get('color')}")
 
-        if tokens_desc:
-            max_puntos += 15.0
-            tokens_cand = tokenizar(f"{r_raza} {r_desc} {r_color}")
-            comunes = tokens_desc.intersection(tokens_cand)
+        if tam_n and tam_n != "No sé / No especificado" and tam_c and tam_c != "No sé / No especificado":
+            peso_datos += 15.0
+            if tam_n == tam_c:
+                puntos_datos += 15.0
+                motivos.append(f"Tamaño: {tam_c}")
+
+        if tokens_n and tokens_c:
+            peso_datos += 10.0
+            comunes = tokens_n.intersection(tokens_c)
             if comunes:
-                ratio = min(1.0, len(comunes) / max(1, min(len(tokens_desc), 3)))
-                puntos += 15.0 * ratio
-                motivos.append(f"Detalles ({', '.join(sorted(comunes))})")
+                puntos_datos += 10.0 * min(1.0, len(comunes) / max(1, min(len(tokens_n), 2)))
+                motivos.append(f"Detalles: {', '.join(sorted(comunes))}")
 
-        sim_img = similitud_visual(foto_bytes, r_foto)
-        if sim_img is not None:
-            max_puntos += 35.0
-            puntos += 35.0 * sim_img
-            motivos.append(f"Similitud de foto: {int(round(sim_img * 100))}%")
+        score_datos = int(round((puntos_datos / peso_datos) * 100)) if peso_datos > 0 else None
 
-        if max_puntos > 0:
-            porcentaje = int(round((puntos / max_puntos) * 100))
+        # Priorizamos fuertemente la imagen (70% imagen + 30% datos cuando hay foto en ambos lados)
+        if sim_img is not None and score_datos is not None:
+            score_total = int(round((0.70 * sim_img) + (0.30 * score_datos)))
+            motivos.insert(0, f"Imagen: {sim_img}%")
+        elif sim_img is not None:
+            score_total = sim_img
+            motivos.insert(0, f"Imagen: {sim_img}%")
+        elif score_datos is not None:
+            score_total = score_datos
         else:
-            porcentaje = 50
-            motivos.append("Registro disponible en base")
+            score_total = 50
+            motivos.append("Registro disponible")
 
-        # Mostramos coincidencias relevantes (>= 35%) o todos si no hubo filtros específicos
-        if porcentaje >= 35 or max_puntos == 0:
-            resultados.append((row, porcentaje, motivos))
+        if score_total >= 45 or (sim_img is not None and sim_img >= 55):
+            coincidencias.append(
+                {
+                    "id": reg_id,
+                    "fecha_registro": fecha_reg,
+                    "datos": datos_c,
+                    "foto": foto_cand,
+                    "score": score_total,
+                    "sim_img": sim_img,
+                    "motivos": motivos,
+                }
+            )
 
-    resultados.sort(key=lambda item: item[1], reverse=True)
-    return resultados
+    coincidencias.sort(key=lambda x: (x["sim_img"] if x["sim_img"] is not None else -1, x["score"]), reverse=True)
+    return coincidencias
 
 
 def sonar_campanita():
-    """Reproduce un sonido suave de campanita al encontrar coincidencias."""
+    """Reproduce un sonido de campanita en el navegador cuando hay coincidencias."""
     components.html(
         """
         <script>
@@ -218,23 +271,22 @@ def sonar_campanita():
                 const ctx = new AudioCtx();
                 const now = ctx.currentTime;
 
-                function nota(freq, start, duration, gainVal) {
+                function campana(freq, start, dur, vol) {
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
                     osc.type = "sine";
                     osc.frequency.setValueAtTime(freq, start);
                     gain.gain.setValueAtTime(0.0001, start);
-                    gain.gain.exponentialRampToValueAtTime(gainVal, start + 0.02);
-                    gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+                    gain.gain.exponentialRampToValueAtTime(vol, start + 0.015);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
                     osc.connect(gain);
                     gain.connect(ctx.destination);
                     osc.start(start);
-                    osc.stop(start + duration + 0.02);
+                    osc.stop(start + dur + 0.02);
                 }
 
-                // Campanita doble armoniosa
-                nota(1046.5, now, 0.45, 0.14);
-                nota(1567.98, now + 0.14, 0.55, 0.10);
+                campana(1174.66, now, 0.5, 0.16);
+                campana(1760.0, now + 0.15, 0.6, 0.11);
             } catch (e) {}
         })();
         </script>
@@ -243,36 +295,38 @@ def sonar_campanita():
     )
 
 
-def mostrar_resultados(titulo, resultados, etiqueta_contacto):
+def mostrar_coincidencias(titulo, coincidencias, etiqueta_contacto):
     st.markdown("---")
     st.subheader(titulo)
 
-    if not resultados:
-        st.info("No se encontraron coincidencias por ahora. Tu registro quedó guardado en la base de datos para futuras comparaciones.")
+    if not coincidencias:
+        st.info("No se encontraron coincidencias por ahora. Tu registro quedó guardado en su columna correspondiente para futuras comparaciones.")
         return
 
     sonar_campanita()
-    st.success(f"🔔 ¡Coincidencias encontradas! Se detectaron {len(resultados)} perro(s) con similitud en la base de datos.")
+    st.success(f"🔔 ¡Coincidencias detectadas! Se encontraron {len(coincidencias)} perro(s) similares.")
 
-    for row, porcentaje, motivos in resultados:
-        r_id, r_tipo, r_nombre, r_raza, r_tam, r_color, r_zona, r_cont, r_fecha, r_desc, r_foto = row
+    for item in coincidencias:
+        d = item["datos"]
         with st.container(border=True):
             col_img, col_info = st.columns([1, 2.6])
             with col_img:
-                if r_foto:
-                    st.image(bytes(r_foto), use_container_width=True)
+                if item["foto"]:
+                    st.image(bytes(item["foto"]), use_container_width=True)
                 else:
                     st.caption("Sin foto cargada")
             with col_info:
-                st.markdown(f"### Coincidencia: {porcentaje}%")
-                if motivos:
-                    st.caption("Criterios: " + " | ".join(motivos))
-                st.markdown(f"**Nombre:** {r_nombre if r_nombre else 'Sin nombre'} | **Raza:** {r_raza if r_raza else 'No especificada'}")
-                st.markdown(f"**Tamaño:** {r_tam} | **Color:** {r_color if r_color else 'No especificado'}")
-                st.markdown(f"**Zona:** {r_zona} | **Fecha:** {r_fecha}")
-                if r_desc:
-                    st.markdown(f"**Señas / Detalles:** {r_desc}")
-                st.markdown(f"**📞 {etiqueta_contacto}:** `{r_cont}`")
+                img_txt = f" | Similitud de imagen: **{item['sim_img']}%**" if item["sim_img"] is not None else ""
+                st.markdown(f"### Coincidencia general: {item['score']}%{img_txt}")
+                if item["motivos"]:
+                    st.caption("Detalle: " + " • ".join(item["motivos"]))
+                if d.get("nombre"):
+                    st.markdown(f"**Nombre:** {d.get('nombre')}")
+                st.markdown(f"**Raza:** {d.get('raza') or 'No especificada'} | **Tamaño:** {d.get('tamanio') or '-'} | **Color:** {d.get('color') or '-'}")
+                st.markdown(f"**Zona:** {d.get('zona') or '-'} | **Fecha:** {d.get('fecha') or item['fecha_registro']}")
+                if d.get("descripcion"):
+                    st.markdown(f"**Señas / Detalles:** {d.get('descripcion')}")
+                st.markdown(f"**📞 {etiqueta_contacto}:** `{d.get('contacto') or 'No cargado'}`")
 
 
 # --- ESTADO ---
@@ -312,48 +366,54 @@ if modo_sidebar == "Administrador":
 
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM perros ORDER BY fecha DESC")
+        cursor.execute("SELECT id, fecha_registro, perro_perdido, foto_perdido, perro_visto, foto_visto FROM perros ORDER BY fecha_registro DESC")
         registros = cursor.fetchall()
         conn.close()
 
-        st.markdown(f"**Total de registros en base de datos:** {len(registros)}")
-        for row in registros:
-            r_id, r_tipo, r_nombre, r_raza, r_tam, r_color, r_zona, r_cont, r_fecha, r_desc, r_foto = row
-            with st.expander(f"[{r_tipo}] {r_nombre or 'Sin nombre'} - {r_zona} ({r_fecha}) | ID: {r_id}"):
-                c1, c2 = st.columns([1, 2])
-                with c1:
-                    if r_foto:
-                        st.image(bytes(r_foto), use_container_width=True)
+        st.markdown(f"**Total de filas en base de datos:** {len(registros)}")
+        for reg_id, fecha_reg, p_perd_raw, f_perd, p_vist_raw, f_vist in registros:
+            p_perd = json.loads(p_perd_raw) if p_perd_raw else None
+            p_vist = json.loads(p_vist_raw) if p_vist_raw else None
+            etiqueta = "Perro Perdido" if p_perd else "Perro Visto"
+            datos_ref = p_perd or p_vist or {}
+            with st.expander(f"[{etiqueta}] {datos_ref.get('nombre') or datos_ref.get('raza') or 'Sin título'} - {datos_ref.get('zona') or '-'} ({fecha_reg}) | ID: {reg_id}"):
+                c_perd, c_vist = st.columns(2)
+                with c_perd:
+                    st.markdown("**Columna Perro Perdido**")
+                    if p_perd:
+                        if f_perd:
+                            st.image(bytes(f_perd), width=180)
+                        for k, v in p_perd.items():
+                            st.write(f"- **{k}:** {v or '-'}")
                     else:
-                        st.caption("Sin foto")
-                with c2:
-                    st.write(f"**Tipo:** {r_tipo}")
-                    st.write(f"**Nombre:** {r_nombre or '-'}")
-                    st.write(f"**Raza:** {r_raza or '-'}")
-                    st.write(f"**Tamaño:** {r_tam}")
-                    st.write(f"**Color:** {r_color or '-'}")
-                    st.write(f"**Zona:** {r_zona}")
-                    st.write(f"**Fecha:** {r_fecha}")
-                    st.write(f"**Descripción:** {r_desc or '-'}")
-                    st.write(f"**Contacto:** {r_cont}")
-                    if st.button("Eliminar registro", key=f"borrar_{r_id}"):
-                        conn = sqlite3.connect(DB_PATH)
-                        cur = conn.cursor()
-                        cur.execute("DELETE FROM perros WHERE id = ?", (r_id,))
-                        conn.commit()
-                        conn.close()
-                        st.rerun()
+                        st.caption("Vacío en este registro")
+                with c_vist:
+                    st.markdown("**Columna Perro Visto**")
+                    if p_vist:
+                        if f_vist:
+                            st.image(bytes(f_vist), width=180)
+                        for k, v in p_vist.items():
+                            st.write(f"- **{k}:** {v or '-'}")
+                    else:
+                        st.caption("Vacío en este registro")
+                if st.button("Eliminar registro", key=f"borrar_{reg_id}"):
+                    conn = sqlite3.connect(DB_PATH)
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM perros WHERE id = ?", (reg_id,))
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
 
 # --- PANTALLA PRINCIPAL: 2 OPCIONES ---
 else:
-    st.markdown("<h1 style='text-align: center;'>🐾 Perros Perdidos y Encontrados</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Elegí una opción para cargar foto y datos y cruzar información:</p>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center;'>🐾 Perros Perdidos y Vistos</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Elegí una opción para cargar foto y datos y comparar imágenes:</p>", unsafe_allow_html=True)
 
     col_op1, col_op2 = st.columns(2)
     with col_op1:
         with st.container(border=True):
             st.markdown("### ¿Perdiste a tu perro?")
-            st.write("Cargá la foto y los datos de tu perro perdido y comparalos con perros vistos o encontrados.")
+            st.write("Cargá la foto y los datos de tu perro perdido y comparalos con la columna de perros vistos.")
             if st.button("Entrar: Perdiste a tu perro", use_container_width=True, type="primary"):
                 st.session_state["pantalla_activa"] = "perdido"
                 st.rerun()
@@ -361,7 +421,7 @@ else:
     with col_op2:
         with st.container(border=True):
             st.markdown("### ¿Viste un perro perdido o lo encontraste?")
-            st.write("Cargá la foto y los datos del perro que viste o encontraste y comparalos con perros perdidos.")
+            st.write("Cargá la foto y los datos del perro visto y comparalos con la columna de perros perdidos.")
             if st.button("Entrar: Viste un perro o lo encontraste", use_container_width=True):
                 st.session_state["pantalla_activa"] = "visto"
                 st.rerun()
@@ -403,33 +463,32 @@ else:
 
             fecha = st.date_input("Fecha en que se perdió", value=date.today())
             descripcion = st.text_area("Señas particulares, collar, edad aproximada o detalles")
-            guardar_btn = st.form_submit_button("Guardar y comparar con vistos / encontrados")
+            guardar_btn = st.form_submit_button("Guardar y comparar imagen con perros vistos")
 
         if guardar_btn:
             if not zona.strip() or not contacto.strip():
                 st.error("Completá al menos **Barrio o zona** y **Teléfono / WhatsApp de contacto**.")
             else:
                 try:
+                    datos_perdido = {
+                        "nombre": nombre.strip(),
+                        "raza": raza.strip(),
+                        "tamanio": tamanio,
+                        "color": color.strip(),
+                        "zona": zona.strip(),
+                        "contacto": contacto.strip(),
+                        "fecha": str(fecha),
+                        "descripcion": descripcion.strip(),
+                    }
                     foto_final = foto_p_guardada
-                    guardar_registro(
-                        tipo_reporte="Perdido",
-                        nombre=nombre,
-                        raza=raza,
-                        tamanio=tamanio,
-                        color=color,
-                        zona=zona,
-                        contacto=contacto,
-                        fecha=fecha,
-                        descripcion=descripcion,
-                        foto_bytes=foto_final,
-                    )
+                    guardar_en_columna("perdido", datos_perdido, foto_final)
                     st.session_state["foto_perdido_bytes"] = None
-                    st.success("Tu perro perdido quedó guardado en la base de datos.")
-                    cruces = comparar_con_base("Visto / Encontrado", zona, color, tamanio, raza, descripcion, foto_final)
-                    mostrar_resultados(
-                        "🔔 Coincidencias en perros VISTOS o ENCONTRADOS",
-                        cruces,
-                        "Contacto de quien lo vio / encontró",
+                    st.success("Guardado en la columna de **Perros Perdidos**.")
+                    coincidencias = comparar_contra_columna_opuesta("visto", datos_perdido, foto_final)
+                    mostrar_coincidencias(
+                        "🔔 Coincidencias en la columna de PERROS VISTOS",
+                        coincidencias,
+                        "Contacto de quien lo vio",
                     )
                 except sqlite3.Error as e:
                     st.error(f"Error de base de datos SQLite al guardar: {e}")
@@ -445,7 +504,7 @@ else:
         st.subheader("¿Viste un perro perdido o lo encontraste? — Cargá su foto y sus datos")
 
         archivo_v = st.file_uploader(
-            "Cargá la foto del perro que viste o encontraste",
+            "Cargá la foto del perro visto",
             type=["jpg", "jpeg", "png", "webp", "heic"],
             key="uploader_visto",
         )
@@ -464,38 +523,36 @@ else:
                 tamanio = st.selectbox("Tamaño", ["No sé / No especificado", "Pequeño", "Mediano", "Grande"])
             with c2:
                 color = st.text_input("Color / Pelaje")
-                zona = st.text_input("Barrio o zona donde lo viste / encontraste *")
+                zona = st.text_input("Barrio o zona donde lo viste *")
                 contacto = st.text_input("Tu teléfono / WhatsApp de contacto *")
 
             fecha = st.date_input("Fecha", value=date.today())
             descripcion = st.text_area("Señas particulares, collar, comportamiento o lugar exacto")
-            cruzar_btn = st.form_submit_button("Guardar y comparar con perros perdidos")
+            cruzar_btn = st.form_submit_button("Guardar y comparar imagen con perros perdidos")
 
         if cruzar_btn:
             if not zona.strip() or not contacto.strip():
                 st.error("Completá al menos **Barrio o zona** y **Tu teléfono / WhatsApp de contacto**.")
             else:
                 try:
+                    datos_visto = {
+                        "situacion": situacion,
+                        "raza": raza.strip(),
+                        "tamanio": tamanio,
+                        "color": color.strip(),
+                        "zona": zona.strip(),
+                        "contacto": contacto.strip(),
+                        "fecha": str(fecha),
+                        "descripcion": descripcion.strip(),
+                    }
                     foto_final = foto_v_guardada
-                    desc_completa = f"[{situacion}] {descripcion}".strip()
-                    guardar_registro(
-                        tipo_reporte="Visto / Encontrado",
-                        nombre="",
-                        raza=raza,
-                        tamanio=tamanio,
-                        color=color,
-                        zona=zona,
-                        contacto=contacto,
-                        fecha=fecha,
-                        descripcion=desc_completa,
-                        foto_bytes=foto_final,
-                    )
+                    guardar_en_columna("visto", datos_visto, foto_final)
                     st.session_state["foto_visto_bytes"] = None
-                    st.success("Tu reporte quedó guardado en la base de datos.")
-                    cruces = comparar_con_base("Perdido", zona, color, tamanio, raza, desc_completa, foto_final)
-                    mostrar_resultados(
-                        "🔔 Coincidencias en PERROS PERDIDOS",
-                        cruces,
+                    st.success("Guardado en la columna de **Perros Vistos**.")
+                    coincidencias = comparar_contra_columna_opuesta("perdido", datos_visto, foto_final)
+                    mostrar_coincidencias(
+                        "🔔 Coincidencias en la columna de PERROS PERDIDOS",
+                        coincidencias,
                         "Contacto del dueño",
                     )
                 except sqlite3.Error as e:
