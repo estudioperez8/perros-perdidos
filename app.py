@@ -16,25 +16,38 @@ ADMIN_USER = "admin2026"
 ADMIN_PASS = "2026"
 
 
-# --- BASE DE DATOS ---
+# --- BASE DE DATOS CON MIGRACIÓN AUTOMÁTICA DE ESQUEMA ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS perros (
-            id TEXT PRIMARY KEY,
-            tipo_reporte TEXT,
-            nombre TEXT,
-            raza TEXT,
-            tamanio TEXT,
-            color TEXT,
-            zona TEXT,
-            contacto TEXT,
-            fecha TEXT,
-            descripcion TEXT,
-            foto_bytes BLOB
-        )
-    """)
+
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='perros'")
+    existe_tabla = cursor.fetchone() is not None
+
+    if existe_tabla:
+        cursor.execute("PRAGMA table_info(perros)")
+        columnas = [col[1] for col in cursor.fetchall()]
+        if "foto_bytes" not in columnas or "tipo_reporte" not in columnas:
+            cursor.execute("DROP TABLE perros")
+            existe_tabla = False
+
+    if not existe_tabla:
+        cursor.execute("""
+            CREATE TABLE perros (
+                id TEXT PRIMARY KEY,
+                tipo_reporte TEXT,
+                nombre TEXT,
+                raza TEXT,
+                tamanio TEXT,
+                color TEXT,
+                zona TEXT,
+                contacto TEXT,
+                fecha TEXT,
+                descripcion TEXT,
+                foto_bytes BLOB
+            )
+        """)
+
     conn.commit()
     conn.close()
 
@@ -82,7 +95,7 @@ def guardar_registro(tipo_reporte, nombre, raza, tamanio, color, zona, contacto,
             contacto.strip(),
             str(fecha),
             descripcion.strip(),
-            foto_bytes,
+            sqlite3.Binary(foto_bytes) if foto_bytes is not None else None,
         ),
     )
     conn.commit()
@@ -141,7 +154,7 @@ def mostrar_cruces(titulo_alerta, cruces, etiqueta_contacto):
             col_img, col_info = st.columns([1, 2.5])
             with col_img:
                 if r_foto:
-                    st.image(r_foto, use_container_width=True)
+                    st.image(bytes(r_foto), use_container_width=True)
                 else:
                     st.caption("Sin foto cargada")
             with col_info:
@@ -199,7 +212,7 @@ if modo_sidebar == "Administrador":
                 c1, c2 = st.columns([1, 2])
                 with c1:
                     if r_foto:
-                        st.image(r_foto, use_container_width=True)
+                        st.image(bytes(r_foto), use_container_width=True)
                     else:
                         st.caption("Sin foto")
                 with c2:
@@ -244,7 +257,7 @@ else:
 
     pantalla = st.session_state.get("pantalla_activa")
 
-    # --- OPCIÓN 1: PERDISTE A TU PERRO (CARGA FOTO AL ENTRAR AQUÍ) ---
+    # --- OPCIÓN 1: PERDISTE A TU PERRO ---
     if pantalla == "perdido":
         st.markdown("---")
         if st.button("← Volver a las 2 opciones"):
@@ -280,28 +293,31 @@ else:
             if not zona.strip() or not contacto.strip():
                 st.error("Completá al menos **Barrio o zona** y **Teléfono / WhatsApp de contacto**.")
             else:
-                foto_bytes = procesar_foto(foto_perdido)
-                guardar_registro(
-                    tipo_reporte="Perdido",
-                    nombre=nombre,
-                    raza=raza,
-                    tamanio=tamanio,
-                    color=color,
-                    zona=zona,
-                    contacto=contacto,
-                    fecha=fecha,
-                    descripcion=descripcion,
-                    foto_bytes=foto_bytes,
-                )
-                st.success("Tu perro perdido quedó guardado en la base de datos.")
-                cruces = buscar_cruces("Visto / Encontrado", zona, color, tamanio)
-                mostrar_cruces(
-                    "Posibles coincidencias en perros VISTOS o ENCONTRADOS",
-                    cruces,
-                    "Contacto de quien lo vio / encontró",
-                )
+                try:
+                    foto_bytes = procesar_foto(foto_perdido)
+                    guardar_registro(
+                        tipo_reporte="Perdido",
+                        nombre=nombre,
+                        raza=raza,
+                        tamanio=tamanio,
+                        color=color,
+                        zona=zona,
+                        contacto=contacto,
+                        fecha=fecha,
+                        descripcion=descripcion,
+                        foto_bytes=foto_bytes,
+                    )
+                    st.success("Tu perro perdido quedó guardado en la base de datos.")
+                    cruces = buscar_cruces("Visto / Encontrado", zona, color, tamanio)
+                    mostrar_cruces(
+                        "Posibles coincidencias en perros VISTOS o ENCONTRADOS",
+                        cruces,
+                        "Contacto de quien lo vio / encontró",
+                    )
+                except sqlite3.Error as e:
+                    st.error(f"Error de base de datos SQLite al guardar: {e}")
 
-    # --- OPCIÓN 2: VISTE UN PERRO PERDIDO O LO ENCONTRASTE (CARGA FOTO AL ENTRAR AQUÍ) ---
+    # --- OPCIÓN 2: VISTE UN PERRO PERDIDO O LO ENCONTRASTE ---
     elif pantalla == "visto":
         st.markdown("---")
         if st.button("← Volver a las 2 opciones"):
@@ -337,24 +353,27 @@ else:
             if not zona.strip() or not contacto.strip():
                 st.error("Completá al menos **Barrio o zona** y **Tu teléfono / WhatsApp de contacto**.")
             else:
-                foto_bytes = procesar_foto(foto_visto)
-                desc_completa = f"[{situacion}] {descripcion}".strip()
-                guardar_registro(
-                    tipo_reporte="Visto / Encontrado",
-                    nombre="",
-                    raza=raza,
-                    tamanio=tamanio,
-                    color=color,
-                    zona=zona,
-                    contacto=contacto,
-                    fecha=fecha,
-                    descripcion=desc_completa,
-                    foto_bytes=foto_bytes,
-                )
-                st.success("Tu reporte quedó guardado en la base de datos.")
-                cruces = buscar_cruces("Perdido", zona, color, tamanio)
-                mostrar_cruces(
-                    "Posibles coincidencias en PERROS PERDIDOS",
-                    cruces,
-                    "Contacto del dueño",
-                )
+                try:
+                    foto_bytes = procesar_foto(foto_visto)
+                    desc_completa = f"[{situacion}] {descripcion}".strip()
+                    guardar_registro(
+                        tipo_reporte="Visto / Encontrado",
+                        nombre="",
+                        raza=raza,
+                        tamanio=tamanio,
+                        color=color,
+                        zona=zona,
+                        contacto=contacto,
+                        fecha=fecha,
+                        descripcion=desc_completa,
+                        foto_bytes=foto_bytes,
+                    )
+                    st.success("Tu reporte quedó guardado en la base de datos.")
+                    cruces = buscar_cruces("Perdido", zona, color, tamanio)
+                    mostrar_cruces(
+                        "Posibles coincidencias en PERROS PERDIDOS",
+                        cruces,
+                        "Contacto del dueño",
+                    )
+                except sqlite3.Error as e:
+                    st.error(f"Error de base de datos SQLite al guardar: {e}")
