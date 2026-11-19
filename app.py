@@ -380,11 +380,8 @@ def comparar_contra_columna_opuesta(columna_opuesta, datos_nuevo, foto_nueva):
     return coincidencias[:MAX_RESULTADOS]
 
 
-def contar_y_marcar_coincidencias_mayores_60():
-    """
-    Cuenta cuántos pares entre perros perdidos y perros vistos superan el 60%
-    y devuelve el total junto con el incremento respecto al conteo previo en sesión.
-    """
+def contar_coincidencias_mayores_60():
+    """Cuenta cuántos pares entre perros perdidos y perros vistos superan el 60%."""
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT perro_perdido, foto_perdido FROM perros WHERE perro_perdido IS NOT NULL")
@@ -393,36 +390,27 @@ def contar_y_marcar_coincidencias_mayores_60():
     vistos = cursor.fetchall()
     conn.close()
 
+    if not perdidos or not vistos:
+        return 0
+
     total_actual = 0
-    if perdidos and vistos:
-        for p_raw, f_perd in perdidos:
+    for p_raw, f_perd in perdidos:
+        try:
+            datos_p = json.loads(p_raw) if p_raw else {}
+        except Exception:
+            datos_p = {}
+
+        for v_raw, f_vist in vistos:
             try:
-                datos_p = json.loads(p_raw) if p_raw else {}
+                datos_v = json.loads(v_raw) if v_raw else {}
             except Exception:
-                datos_p = {}
+                datos_v = {}
 
-            for v_raw, f_vist in vistos:
-                try:
-                    datos_v = json.loads(v_raw) if v_raw else {}
-                except Exception:
-                    datos_v = {}
+            score_total, _, _ = calcular_score_par(datos_p, f_perd, datos_v, f_vist)
+            if score_total > UMBRAL_CONTADOR_COINCIDENCIA:
+                total_actual += 1
 
-                score_total, _, _ = calcular_score_par(datos_p, f_perd, datos_v, f_vist)
-                if score_total > UMBRAL_CONTADOR_COINCIDENCIA:
-                    total_actual += 1
-
-    previo = st.session_state.get("contador_60_previo")
-    if previo is None:
-        delta_str = None
-    elif total_actual > previo:
-        delta_str = f"+{total_actual - previo}"
-    elif total_actual < previo:
-        delta_str = f"{total_actual - previo}"
-    else:
-        delta_str = None
-
-    st.session_state["contador_60_previo"] = total_actual
-    return total_actual, delta_str
+    return total_actual
 
 
 def sonar_campanita():
@@ -637,19 +625,13 @@ else:
     st.markdown("<h1 style='text-align: center;'>🐾 Perros Perdidos y Vistos</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Elegí una opción para cargar foto y datos y comparar imágenes:</p>", unsafe_allow_html=True)
 
-    total_coincidencias, delta_coincidencias = contar_y_marcar_coincidencias_mayores_60()
+    total_coincidencias = contar_coincidencias_mayores_60()
     _, col_metric, _ = st.columns([1.5, 1, 1.5])
     with col_metric:
         st.metric(
             label="Coincidencias",
             value=total_coincidencias,
-            delta=delta_coincidencias,
         )
-        if total_coincidencias > 0:
-            st.markdown(
-                f"<div style='text-align:center; font-size:0.85rem; color:#1b7a3d; font-weight:600;'>✓ Marcadas {total_coincidencias} coincidencia(s) mayores al 60%</div>",
-                unsafe_allow_html=True,
-            )
 
     col_op1, col_op2 = st.columns(2)
     with col_op1:
@@ -805,3 +787,4 @@ else:
                     st.error(f"Error de base de datos SQLite al guardar: {e}")
 
     render_footer_principal()
+    
